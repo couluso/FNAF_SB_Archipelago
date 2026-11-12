@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+# release files
+release/
+*.apworld
+
+# written by the mod and the client while playing
+mod/FNaF_SB_Ap/log.txt
+mod/FNaF_SB_Ap/bridge/*
+!mod/FNaF_SB_Ap/bridge/.keep
+
+# contains game data, never commit
+*.pak
+*.bnk
