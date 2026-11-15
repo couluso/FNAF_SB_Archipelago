@@ -2623,6 +2623,31 @@ local function death_link_tick()
         dl.pending = 0
         return
     end
+    dl_step("paused or in a cinematic?")
+    local pc = dl.controller()
+    local skip = (c.skip_paused ~= false and dl.paused(greg) and "the game is paused")
+        or (c.skip_cinematic ~= false and dl.sequence(pc))
+    if skip then
+        log:write("AP", "Death Link: " .. skip .. ": received death skipped")
+        dl.pending, dl.tries, dl.ejected, dl.out_ms, dl.unhide_ms = 0, 0, nil, nil, nil
+        dl.choice_key, dl.choice_how = nil, nil
+        return
+    end
+    dl_step("hiding?")
+    if c.eject_hiding ~= false and dl.hiding(greg) then
+        local now = world_now_ms()
+        if not dl.unhide_ms or now - dl.unhide_ms >= (c.hide_retry_ms or 2000) then
+            local first = dl.unhide_ms == nil
+            dl.unhide_ms = now
+            local ok = pcall(function() greg:LeaveHidingSpace() end)
+            if first or not ok then
+                log:write("AP", "Death Link: Gregory is hiding: LeaveHidingSpace " .. (ok and "called" or "FAILED"))
+            end
+        end
+        dl.ejected, dl.out_ms = true, nil
+        dl_say("wait", "waiting: Gregory is hiding")
+        return
+    end
     dl_step("inside Freddy?")
     local ws = find("WorldStateSystem")
     if c.wait_in_freddy ~= false and ws and call(ws, "IsPlayerInFreddy") == true then
@@ -2648,9 +2673,17 @@ local function death_link_tick()
     if dl.ejected and (c.after_eject_ms or 150) > 0 then
         dl.out_ms = dl.out_ms or world_now_ms()
         if world_now_ms() - dl.out_ms < (c.after_eject_ms or 150) then
-            dl_say("wait", string.format("waiting: Gregory just got out of Freddy (%d ms)", c.after_eject_ms or 150))
+            dl_say("wait", string.format("waiting: Gregory just got out of %s (%d ms)",
+                dl.unhide_ms and "his hiding spot" or "Freddy", c.after_eject_ms or 150))
             return
         end
+    end
+    local cam = c.skip_cinematic ~= false and dl.camera_view(pc)
+    if cam then
+        log:write("AP", "Death Link: " .. cam .. ": received death skipped")
+        dl.pending, dl.tries, dl.ejected, dl.out_ms, dl.unhide_ms = 0, 0, nil, nil, nil
+        dl.choice_key, dl.choice_how = nil, nil
+        return
     end
     dl.said.wait = nil
     if not security_seeded then math.randomseed(os.time()); security_seeded = true end
@@ -2664,7 +2697,7 @@ local function death_link_tick()
     end
     dl.choice_key, dl.choice_how = key, how
     local function done()
-        dl.pending, dl.tries, dl.ejected, dl.out_ms = 0, 0, nil, nil
+        dl.pending, dl.tries, dl.ejected, dl.out_ms, dl.unhide_ms = 0, 0, nil, nil, nil
         dl.choice_key, dl.choice_how, dl.spot_i, dl.round_ms = nil, nil, nil, nil
         dl.skip, dl.last_step = {}, nil
         dl.staff_alarmed, dl.staff_sub, dl.staff_load_ms = nil, nil, nil
@@ -4140,12 +4173,26 @@ function dl.player_busy()
     local pawn = call(pc, "K2_GetPawn")
     local pn = is_valid(pawn) and ((full_name(pawn) or ""):match("^(%S+)") or "?") or "nil"
     if pn ~= (cc.player_pawn or "Gregory_C") then return "playing as " .. pn end
-    if prop(pc, "IsPlaySequenceRunning?") == true then return "cinematic" end
-    local vt = call(pc, "GetViewTarget")
+    return dl.sequence(pc) or dl.camera_view(pc)
+end
+function dl.sequence(pc)
+    if pc and prop(pc, "IsPlaySequenceRunning?") == true then return "cinematic" end
+    return nil
+end
+function dl.camera_view(pc)
+    local vt = pc and call(pc, "GetViewTarget")
     local vc = is_valid(vt) and ((full_name(vt) or ""):match("^(%S+)") or "") or ""
     if vc:find("Camera", 1, true) then return "cinematic (view through " .. vc .. ")" end
     return nil
 end
+function dl.paused(greg)
+    local gs = obj_at("/Script/Engine.Default__GameplayStatics")
+    return gs ~= nil and greg ~= nil and call(gs, "IsGamePaused", greg) == true
+end
+function dl.hiding(greg)
+    return prop(greg, "IsHiding") == true or prop(greg, "Hide/Unhide Transition Active") == true
+end
+function dl.controller() return controller() end
 function dl.ui_hooks()
     if dl.ui_hooked then return end
     local gi = "/Game/Blueprints/System/FNAFGameInstance.FNAFGameInstance_C:"
@@ -4922,7 +4969,7 @@ end
 
 local held_triggers = {}
 dl.om = { seen_undone = false, remove_at = nil, removed = 0, said = {}, near = {}, next_near = 0,
-          swapped = false, award_hooked = nil, world = nil, why = nil, due = {}, unrestricted = {} }
+          swapped = false, award_hooked = nil, world = nil, why = nil, due = {}, unrestricted = {}, pos = {} }
 local function om_say(key, text)
     if not dl.om.said[key] then dl.om.said[key] = true; log:write("AP", text) end
 end
@@ -4936,6 +4983,10 @@ local function om_set_due(key, at)
     local d = dl.om.due
     if not d[key] or at > d[key] then d[key] = at end
 end
+function dl.om_keep_pos(actor, path)
+    local x, y, z = location_of(actor)
+    if not (x == 0 and y == 0 and z == 0) then dl.om.pos[path] = { x = x, y = y, z = z } end
+end
 function dl.office_appeared(actor, cls)
     local c = apcfg.office_monty or {}
     if c.enabled == false then return end
@@ -4943,13 +4994,15 @@ function dl.office_appeared(actor, cls)
     for key, classes in pairs(w) do
         for _, k in ipairs(classes) do
             if k == cls then
+                local path = obj_path(actor)
                 if key == "doors" then
-                    local path = obj_path(actor)
                     if path and om_watched(c, path) then
+                        dl.om_keep_pos(actor, path)
                         dl.om.unrestricted[path] = nil
-                        om_set_due("doors", now + (c.settle_ms or 10000))
+                        om_set_due("door " .. path, now + (c.settle_ms or 10000))
                     end
                 else
+                    if path and (path == c.handler or path == c.office) then dl.om_keep_pos(actor, path) end
                     om_set_due(key, now + (c.appear_ms or 1000))
                 end
             end
@@ -5073,12 +5126,33 @@ function dl.office_monty_tick(missions, tasks)
         om.world, om.why, om.unrestricted, om.remove_at, om.seen_undone, om.swapped =
             world.switches, nil, {}, nil, false, false
         local t = now + (c.settle_ms or 10000)
-        om.due = { doors = t, monty = t, swap = t }
+        om.due = { monty = t, swap = t }
+        for _, list in ipairs({ c.doors or {}, c.freddy_doors or {} }) do
+            for _, p in ipairs(list) do om.due["door " .. p] = t end
+        end
     end
-    local function due(key)
+    local gx, gy, gz = nil, nil, nil
+    local function near(path)
+        local p = om.pos[path]
+        if not p then return false end
+        if gx == nil then
+            local greg = find("Gregory_C")
+            gx, gy, gz = 0, 0, 0
+            if greg then gx, gy, gz = location_of(greg) end
+        end
+        if gx == 0 and gy == 0 and gz == 0 then return false end
+        local r = c.near_radius or 2500
+        return (gx - p.x) ^ 2 + (gy - p.y) ^ 2 + (gz - p.z) ^ 2 <= r * r
+    end
+    local function due(key, path)
         local t = om.due[key]
-        if t and now >= t then om.due[key] = nil; return true end
+        if t and now >= t and near(path) then om.due[key] = nil; return true end
         return false
+    end
+    local function doors_due(at)
+        for _, list in ipairs({ c.doors or {}, c.freddy_doors or {} }) do
+            for _, p in ipairs(list) do om_set_due("door " .. p, at) end
+        end
     end
     local function flag(n)
         local ws = find("WorldStateSystem")
@@ -5094,28 +5168,26 @@ function dl.office_monty_tick(missions, tasks)
         if not om.why then
             om.why = why
             if om.seen_undone then
-                om_set_due("doors", now)
+                doors_due(now)
                 om.remove_at = now + (c.grace_ms or 15000)
                 om_set_due("monty", om.remove_at)
             end
         end
-        if due("doors") then
-            if c.unlock_doors ~= false then
-                for _, path in ipairs(c.doors or {}) do om_door(path, why) end
-            end
-            if c.unrestrict_doors ~= false then
-                for _, path in ipairs(c.freddy_doors or {}) do om_unrestrict(path, why) end
-            end
+        for _, path in ipairs(c.doors or {}) do
+            if due("door " .. path, path) and c.unlock_doors ~= false then om_door(path, why) end
         end
-        if due("monty") then
+        for _, path in ipairs(c.freddy_doors or {}) do
+            if due("door " .. path, path) and c.unrestrict_doors ~= false then om_unrestrict(path, why) end
+        end
+        if due("monty", c.handler) then
             local h = obj_at(c.handler)
             if h then om_monty(c, h, why) end
         end
         return
     end
     om.seen_undone, om.remove_at = true, nil
-    if due("swap") then om_swap(c) end
-    if not due("monty") or om.swapped then return end
+    if due("swap", c.office) then om_swap(c) end
+    if not due("monty", c.handler) or om.swapped then return end
     if c.entered_flag and flag(c.entered_flag) then return end
     local early = nil
     for _, it in ipairs(c.early_items or {}) do if not early and game.has(it) then early = it end end
@@ -5232,11 +5304,10 @@ local function machine_sphere(a, key)
     local loc = call(sp, "K2_GetComponentLocation")
     local x, y, z = tonumber(prop(loc, "X")), tonumber(prop(loc, "Y")), tonumber(prop(loc, "Z"))
     local ax, ay, az = location_of(a)
-    if not (x and y and z) or (x == 0 and y == 0 and z == 0) or (ax == 0 and ay == 0 and az == 0)
-        or (x - ax) ^ 2 + (y - ay) ^ 2 + (z - az) ^ 2 > 500 * 500 then
+    if (x == 0 and y == 0 and z == 0) or (ax == 0 and ay == 0 and az == 0) then
         return nil
     end
-    if r and r > 0 then
+    if x and y and z and r and r > 0 and (x - ax) ^ 2 + (y - ay) ^ 2 + (z - az) ^ 2 <= 500 * 500 then
         c = { x = x, y = y, z = z, r = r }
         log:write("AP", string.format("%s interaction sphere: radius %.0f at (%.0f,%.0f,%.0f)",
             key:match("([^%.:]+)$") or key, r, x, y, z))
@@ -5247,10 +5318,25 @@ local function machine_sphere(a, key)
     arcade_sphere[key] = c
     return c or nil
 end
-local function arcade_locks_tick(has_client)
+dl.arcade = { due = nil, world = nil, sig = nil, spots = {} }
+function dl.arcade_appeared(cls)
     local locks = apcfg.arcade_locks
-    if not locks then return nil end
-    local near = nil
+    if locks and cls == (locks.class or "BP_MiniGame_Activator_C") then
+        dl.arcade.due = world_now_ms() + (apcfg.lock_settle_ms or 1500)
+    end
+end
+local function arcade_sig(locks, has_client)
+    local parts, types = { tostring(has_client) }, {}
+    for typ in pairs(locks.types or {}) do types[#types + 1] = typ end
+    table.sort(types)
+    for _, typ in ipairs(types) do
+        parts[#parts + 1] = tostring(has_client and ap:has_received(locks.types[typ].item) or false)
+    end
+    for _, n in ipairs(U.sorted_keys((last_state and last_state.arcade) or {})) do parts[#parts + 1] = n end
+    return table.concat(parts, "|")
+end
+local function arcade_scan(locks, has_client)
+    local spots, again = {}, false
     for _, a in ipairs(dl.find_all(locks.class or "BP_MiniGame_Activator_C")) do
         if is_valid(a) then
             local key = full_name(a)
@@ -5269,29 +5355,18 @@ local function arcade_locks_tick(has_client)
                 elseif has_client and h.before_message and prop(a, "CanUse") == false then
                     reason = "before"
                 end
-                if reason and arcade_locked[key] ~= reason then
-                    log:write("AP", string.format("%s closed (collision off): %s", short_key,
-                        reason == "item" and (h.item .. " not received") or "previous act not beaten (CanUse=false)"))
-                    arcade_locked[key] = reason
-                end
-                if reason and call(a, "GetActorEnableCollision") ~= false then
-                    call(a, "SetActorEnableCollision", false)
-                elseif reason then
-                    local sp = machine_sphere(a, key)
-                    local text = reason == "item" and (h.message or (h.item .. " required")) or h.before_message
-                    if sp then
-                        local greg = find("Gregory_C")
-                        if greg then
-                            local gx, gy, gz = location_of(greg)
-                            local r = sp.r + (locks.sphere_margin or 0)
-                            if (gx - sp.x) ^ 2 + (gy - sp.y) ^ 2 + (gz - sp.z) ^ 2 <= (r + 400) ^ 2 then
-                                near = { x = sp.x, y = sp.y, z = sp.z, range = r, text = text, sphere = true }
-                            end
-                        end
-                    else
-                        near = lock_near(a, { message = text, radius = locks.radius, look = locks.look,
-                            z_offset = locks.z_offset }) or near
+                if reason then
+                    if arcade_locked[key] ~= reason then
+                        log:write("AP", string.format("%s closed (collision off): %s", short_key,
+                            reason == "item" and (h.item .. " not received") or "previous act not beaten (CanUse=false)"))
+                        arcade_locked[key] = reason
                     end
+                    if call(a, "GetActorEnableCollision") ~= false then call(a, "SetActorEnableCollision", false) end
+                    local sp = machine_sphere(a, key)
+                    local x, y, z = location_of(a)
+                    if arcade_sphere[key] == nil or (x == 0 and y == 0 and z == 0) then again = true end
+                    spots[key] = { sphere = sp, x = x, y = y, z = z,
+                        text = reason == "item" and (h.message or (h.item .. " required")) or h.before_message }
                 elseif arcade_locked[key] then
                     call(a, "SetActorEnableCollision", true)
                     arcade_locked[key] = nil
@@ -5299,6 +5374,37 @@ local function arcade_locks_tick(has_client)
                         U.to_str(prop(a, "CanUse"))))
                 end
             end
+        end
+    end
+    return spots, again
+end
+local function arcade_locks_tick(has_client)
+    local locks = apcfg.arcade_locks
+    if not locks then return nil end
+    local A, now = dl.arcade, world_now_ms()
+    if A.world ~= world.switches then A.world, A.spots, A.due = world.switches, {}, now end
+    local sig = arcade_sig(locks, has_client)
+    if sig ~= A.sig then A.sig, A.due = sig, now end
+    if A.due and now >= A.due then
+        local again
+        A.spots, again = arcade_scan(locks, has_client)
+        A.due = again and (now + (locks.retry_ms or 2000)) or nil
+    end
+    local near = nil
+    for _, s in pairs(A.spots) do
+        local sp = s.sphere
+        if sp then
+            local greg = find("Gregory_C")
+            if greg then
+                local gx, gy, gz = location_of(greg)
+                local r = sp.r + (locks.sphere_margin or 0)
+                if (gx - sp.x) ^ 2 + (gy - sp.y) ^ 2 + (gz - sp.z) ^ 2 <= (r + 400) ^ 2 then
+                    near = { x = sp.x, y = sp.y, z = sp.z, range = r, text = s.text, sphere = true }
+                end
+            end
+        else
+            near = lock_near_at(s.x, s.y, s.z, { message = s.text, radius = locks.radius, look = locks.look,
+                z_offset = locks.z_offset }) or near
         end
     end
     return near
@@ -5411,6 +5517,7 @@ if ap and apcfg.block_vanilla then
         local actor = U.unwrap(ctx)
         local cls = class_name(actor)
         dl.lock_actor_appeared(cls)
+        dl.arcade_appeared(cls)
         dl.office_appeared(actor, cls)
         watch.appeared(cls)
         if skip_class[cls] then return end

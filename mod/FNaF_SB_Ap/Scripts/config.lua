@@ -84,6 +84,9 @@ C.ap = {
                   doors = { "BP_DoorMaster_C" } },
         appear_ms = 1000,
         settle_ms = 10000,
+        -- ...and only while Gregory is this close to where the object was when it started (its sublevel loaded):
+        -- the game crashed doing it far away, after the reload of a Death Link death.
+        near_radius = 2500,
         -- Diagnostic: logs every door near the player (within locked_doors_range) once, with its lock state.
         -- Off: it searched every door of the game each poll (lag). The doors are found.
         log_locked_doors = false, locked_doors_range = 800,
@@ -232,6 +235,12 @@ C.ap = {
         wait_in_freddy = true,
         eject_freddy = true,
         eject_bypass_anim = true,
+        -- A death received in the pause menu or during a cinematic is skipped (not kept for later).
+        skip_paused = true,
+        skip_cinematic = true,
+        -- Gregory in a hiding spot is taken out first (Gregory:LeaveHidingSpace, again every hide_retry_ms).
+        eject_hiding = true,
+        hide_retry_ms = 2000,
         retries = 3,
     },
 
