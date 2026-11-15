@@ -92,6 +92,9 @@ T.locations.collect["FlashBeacon"] = 91541012
 T.location_info[91541012] = { key = "monty_golf.faz_camera", status = "FORT" }
 T.locations.collect["Flashlight"] = 91541199
 T.location_info[91541199] = { key = "daycare.flashlight", status = "VERIFIE" }
+-- the lobby security office camera button (its minigame's ItemAward, swapped by the mod)
+T.locations.collect["CamerasOffice_Intro"] = 91541202
+T.location_info[91541202] = { key = "atrium.lobby_office_cameras", status = "FAIBLE" }
 T.locations.collect["FlashlightUpgrade_0"] = 91541096
 T.location_info[91541096] = { key = "monty_golf.flashlight_upgrade_golf", status = "FORT" }
 T.locations.collect["FlashlightUpgrade_1"] = 91541094

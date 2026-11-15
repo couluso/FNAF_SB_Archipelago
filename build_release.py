@@ -28,7 +28,7 @@ def build_mod():
     target = OUT / "FNaF_SB_Ap.zip"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
         for path, rel in files(mod):
-            if rel.name == "log.txt" or (rel.parts[0] == "bridge" and rel.name != ".keep"):
+            if rel.name in ("log.txt", "log_previous.txt", "trace.txt", "trace_previous.txt") or (rel.parts[0] == "bridge" and rel.name != ".keep"):
                 continue
             z.write(path, pathlib.Path("FNaF_SB_Ap") / rel)
         for name in ("LICENSE", "LICENSING.md"):

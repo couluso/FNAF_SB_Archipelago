@@ -7,6 +7,9 @@ release/
 
 # written by the mod and the client while playing
 mod/FNaF_SB_Ap/log.txt
+mod/FNaF_SB_Ap/log_previous.txt
+mod/FNaF_SB_Ap/trace.txt
+mod/FNaF_SB_Ap/trace_previous.txt
 mod/FNaF_SB_Ap/bridge/*
 !mod/FNaF_SB_Ap/bridge/.keep
 

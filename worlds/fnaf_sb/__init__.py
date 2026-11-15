@@ -27,6 +27,7 @@ CLASSIFICATIONS = {
 }
 
 STARTING_AREA_CANDIDATES = tuple(a for a in AREAS if a.start_eligible and len(a.passes) == 1)
+STARTING_PASSES = tuple(dict.fromkeys(a.passes[0] for a in STARTING_AREA_CANDIDATES))
 
 
 class FNaFSBSettings(settings.Group):
@@ -114,14 +115,10 @@ class FNaFSBWorld(World):
 
         precollect(PHOTO_PASS)
 
-        self.multiworld.local_early_items[self.player][MR_HIPPO_MAGNET] = 1
-
-        self.multiworld.local_early_items[self.player][ENTRY_PASS] = 1
-
-        self.multiworld.local_early_items[self.player][PROGRESSIVE_FLASHLIGHT] = 1
-        self.multiworld.local_early_items[self.player][DAYCARE_PASS] = 1
+        for name in (ENTRY_PASS, MR_HIPPO_MAGNET, PROGRESSIVE_FLASHLIGHT, DAYCARE_PASS):
+            self.multiworld.early_items[self.player][name] = 1
         if self.options.randomize_security_badges:
-            self.multiworld.local_early_items[self.player][BADGE] = 1
+            self.multiworld.early_items[self.player][BADGE] = 1
 
         if not self.options.lock_princess_quest:
             for name in PRINCESS_QUEST_ITEMS:
@@ -135,9 +132,9 @@ class FNaFSBWorld(World):
         if not any(self.filler_weights.values()):
             self.filler_weights = {BATTERY: 1}
 
-        count = min(int(self.options.starting_areas), len(STARTING_AREA_CANDIDATES))
-        for area in self.random.sample(STARTING_AREA_CANDIDATES, count):
-            precollect(area.passes[0])
+        count = min(int(self.options.starting_areas), len(STARTING_PASSES))
+        for name in self.random.sample(STARTING_PASSES, count):
+            precollect(name)
 
     def create_regions(self) -> None:
         create_regions(self)
@@ -153,6 +150,12 @@ class FNaFSBWorld(World):
         weights = getattr(self, "filler_weights", None) or FILLER_WEIGHTS
         names, values = zip(*weights.items())
         return self.random.choices(names, values)[0]
+
+    @classmethod
+    def stage_fill_hook(cls, multiworld, progitempool, usefulitempool, filleritempool, fill_locations) -> None:
+        """The Main Atrium's badges and Screwdriver can only go in the Main Entrance and the Daycare (a dozen spots), so they are moved to the end of the pool, which the fill places first."""
+        firsts = (BADGE,) + data.ATRIUM_ITEMS
+        progitempool.sort(key=lambda item: item.game == cls.game and item.name in firsts)
 
     def vanilla_placements(self) -> Dict[str, str]:
         """Location name -> item name kept on its vanilla spot (locked), from the Randomize Security Badges / Randomize Freddy's Abilities options."""

@@ -240,6 +240,8 @@ function A:inventory_added(name)
     end
     if swapped then
         self.log(string.format("vanilla reward blocked: the %s pickup gave %s", original, name))
+        -- a minigame's swapped award (lobby office cameras): its location, in case the award hook missed it
+        if ((self.cfg.office_monty or {}).awards or {})[original] then self:on_event("collect", name) end
         return self.cfg.remove_swap_items ~= false and "remove" or nil
     end
     if self.ap_names[name] and not self:is_ap_name(name) then

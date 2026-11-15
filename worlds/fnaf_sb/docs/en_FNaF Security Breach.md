@@ -25,6 +25,7 @@ Each area needs a Security Badge level, its pass, or both. Once an area is open,
 - The clock reaching each hour, from 12 AM to 6 AM.
 - Picking up a key item (passes, gadgets, Fizzy Faz, upgrades, Golden Plushies).
 - Defeating Monty, Chica or Roxy, and a few story events.
+- Pressing the camera button in the lobby security office during Get Out.
 - With Present Sanity: every collectible present.
 - With Bag Sanity: every duffel bag.
 
@@ -33,7 +34,8 @@ Each area needs a Security Badge level, its pass, or both. Once an area is open,
 A notification shows up in the bottom left corner and the item is applied right away: the area opens, your Security
 Badge level goes up, the gadget is added to your inventory, your battery is refilled, or a buff or trap starts.
 
-When you open a present that holds an Archipelago item, the pickup popup shows what it was and who it was for. See [LICENSING](../LICENSING.md) for credits to the person who made the icons.
+When you pick up a check (a present, a duffel bag, a badge holder...), the pickup popup shows the Archipelago item it
+held and who it was for. See [LICENSING](../LICENSING.md) for credits to the person who made the icons.
 
 ## The Main Entrance and the Daycare
 
@@ -41,18 +43,27 @@ You start in Freddy's room with no Security Badge.
 
 - The Daycare front door needs the Daycare Pass, because the game keeps you inside until the lights
   are back on.
-- The Main Atrium needs Security Badge level 1 and the Escape The Daycare mission as finishing Chica's kitchen or El Chip's first would
-  break the Daycare.
-- Progression items are never placed in the Daycare play area, so you can't
-  get stuck if the slide closes behind you (An option is planned for future release).
+- The Main Atrium needs the Escape The Daycare mission as finishing Chica's kitchen or El Chip's first would
+  break the Daycare. It also needs Security Badge level 2, so you can always get back out of Chica's kitchen or El Chip's,
+  where the story sends you next (level 1 when badges are not shuffled).
+- Whichever one you finish first, you get caught and locked in the Lost and Found. The only way out is the vent, opened
+  with the Screwdriver, so the Main Atrium also needs the Screwdriver. It is always in the Main Entrance or the Daycare.
+- The flashlight upgrade on top of the castle tower in the Daycare play area always holds filler. Every other Daycare
+  check can hold anything.
 
 ## Story logic
 
-The logic follows the game's mission order: an area is only in logic once the mission that opens it is done, and every
-ending requires reaching 6 AM.
+The logic follows the game's mission order: an area is only in logic once the mission that opens it is done, and once
+you have the Security Badge level needed to leave it. Every ending requires reaching 6 AM. 6 AM comes when Freddy is
+upgraded with Roxy's Eyes, which starts the escape, so Roxy's Eyes are always needed.
+
+Fazer Blast and Monty Golf each use up a Party Pass, so both Party Passes are needed before either one is in logic. As
+the Party Pass lets you pick one of them, both need the same badge level. If you start with the Party Pass (Starting
+Area Passes), you get one copy, the other one is in the pool.
 
 You always start with the Faz-Watch and the Photo Pass. The Complimentary Entry Pass, the Mr. Hippo Magnet, the
-Flashlight, the Daycare Pass and, when badges are shuffled, one Security Badge are always placed early.
+Flashlight, the Daycare Pass and, when badges are shuffled, one Security Badge are always placed in sphere 1, in any
+world.
 
 ## Goal
 
@@ -102,7 +113,14 @@ is, and a weight of 0 removes it.
 
 Death Link is disabled by default. When it's enabled, every time Gregory gets caught, everyone with Death Link dies too.
 When someone else dies, Gregory gets the punishment you picked: a chosen or random animatronic jumpscares him, or a
-Staff Bot sounds the alarm. This setting can be changed from the pause menu, the setting will reset everytime the came is closed.
+Staff Bot sounds the alarm. This setting can be changed from the pause menu, the setting will reset everytime the game is closed.
+
+## Tooltips
+
+The game's instruction cards (tooltips) are turned off by default. An item received while you're inside Freddy or in a
+cutscene could open one that can't be closed, and the game would be stuck. You can turn them back on with the "Disable
+Tooltips" checkbox in the pause menu, under Archipelago Options. It's checked again every time the game starts. With
+tooltips on, the items that can open a card wait until you're back in control of Gregory.
 
 ## Known issues
 

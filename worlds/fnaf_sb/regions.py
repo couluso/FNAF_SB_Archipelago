@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 from BaseClasses import Location, Region
 
-from .data import (AREAS, COLLECTIBLE_PRESENT_KEYS, ENDING_BY_GOAL, ENTRANCE_LOCATION_KEYS, ENTRANCE_REGION, HOURS,
+from .data import (AREAS, COLLECTIBLE_PRESENT_KEYS, DAYCARE_JUNK_ONLY_KEYS, ENDING_BY_GOAL, ENTRANCE_LOCATION_KEYS, ENTRANCE_REGION, HOURS,
                    LOCATION_EXTRA_NEEDS, LOCATION_MISSION_GATE, RETIRED_LOCATION_KEYS,
                    LOCATIONS, LOCATION_NAME_TO_ID, MISSION_BY_INTERNAL, VICTORY_EVENT)
 from .rules import (area_entrance_rule, atrium_rule, daycare_door_rule, ending_exit_rule, junk_only_item_rule,
@@ -74,8 +74,7 @@ def create_regions(world: "FNaFSBWorld") -> None:
         rule = _location_rule(world, loc)
         if rule:
             location.access_rule = rule
-        if ((loc.area == "daycare" and loc.kind in ("present", "bag", "flashlight_upgrade"))
-                or (loc.kind == "bag" and bag_mode == 1)):
+        if loc.key in DAYCARE_JUNK_ONLY_KEYS or (loc.kind == "bag" and bag_mode == 1):
             location.item_rule = junk_only_item_rule
         region.locations.append(location)
 

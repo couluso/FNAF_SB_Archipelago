@@ -63,7 +63,9 @@ class RandomizeSecurityBadges(DefaultOnToggle):
     """Shuffles the 8 Security Badges into the item pool. If disabled, each badge holder
     gives its vanilla badge.
 
-    You start with no Security Badge either way. Level 1 is required to enter the Main Atrium.
+    You start with no Security Badge either way. The Main Atrium needs level 2 when the badges
+    are shuffled, so you can always get back out of Chica's kitchen or El Chip's, and level 1
+    when they are not. It also needs the Screwdriver, for the Lost and Found that comes after.
     """
     display_name = "Randomize Security Badges"
 
@@ -95,7 +97,7 @@ class StartingAreas(Range):
     """Number of area passes you start with, picked at random from:
 
     - Backstage Pass (Backstage)
-    - Party Pass (Fazer Blast or Monty Golf)
+    - Party Pass (Fazer Blast and Monty Golf, the logic also wants the 2nd one)
     - Bowling Ticket (Bonnie Bowl)
     - Dance Pass (Fazcade)
 

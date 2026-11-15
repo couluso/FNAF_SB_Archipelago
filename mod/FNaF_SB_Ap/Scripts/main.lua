@@ -6,7 +6,7 @@ local APC = require("ap_core")
 local ok_tables, APT = pcall(require, "ap_tables")
 
 local MOD = "FNaF_SB_Ap"
-local VERSION = "1.0.0-beta.1"
+local VERSION = "1.0.0-beta.2"
 
 -- paths & log
 local src = debug.getinfo(1, "S").source:gsub("^@", "")
@@ -15,16 +15,42 @@ if not U.file_exists(mod_dir .. "/Scripts/main.lua") then
     mod_dir = "Mods/" .. MOD
 end
 
+if cfg.keep_previous_log ~= false then
+    pcall(os.remove, mod_dir .. "/log_previous.txt")
+    pcall(os.rename, mod_dir .. "/log.txt", mod_dir .. "/log_previous.txt")
+end
 local log = U.new_logger({
     path = mod_dir .. "/log.txt",
     max_lines = cfg.max_log_lines,
     prefix = "[FNaF_SB_Ap]",
     console = cfg.log_console,
     verbose = cfg.log_verbose,
+    flush_every = cfg.log_flush_every,
     echo = function(s) print(s .. "\n") end,
 })
 
+local trace = { file = nil, n = 0, path = mod_dir .. "/trace.txt" }
+if cfg.crash_trace ~= false then
+    pcall(os.remove, mod_dir .. "/trace_previous.txt")
+    pcall(os.rename, trace.path, mod_dir .. "/trace_previous.txt")
+    trace.file = io.open(trace.path, "wb")
+end
+local function trace_step(what)
+    local f = trace.file
+    if not f then return end
+    trace.n = trace.n + 1
+    if trace.n > (cfg.crash_trace_lines or 20000) then
+        f:close()
+        f = io.open(trace.path, "wb")
+        trace.file, trace.n = f, 1
+        if not f then return end
+    end
+    f:write(os.date("%H:%M:%S"), string.format(" %.3f ", os.clock()), what, "\n")
+    f:flush()
+end
+
 local function try(what, fn, ...)
+    trace_step(what)
     local ok, err = pcall(fn, ...)
     if not ok then log:write("Error", what .. ": " .. tostring(err)) end
     return ok, err
@@ -191,6 +217,43 @@ end
 -- state snapshot
 local clock_seen_negative = false
 
+local watch = { world = nil, at = {}, due = nil }
+function watch.appeared(cls)
+    if (cfg.watch_actor_props or {})[cls] then watch.due = world_now_ms() + (cfg.watch_appear_ms or 1000) end
+end
+function watch.find_all()
+    local again = false
+    for cls in pairs(cfg.watch_actor_props or {}) do
+        for _, a in ipairs(FindAllOf(cls) or {}) do
+            local p = is_valid(a) and obj_path(a)
+            if p and not p:find("Default__", 1, true) then
+                local x, y, z = location_of(a)
+                if x == 0 and y == 0 and z == 0 then again = true
+                else watch.at[cls] = { path = p, x = x, y = y, z = z } end
+            end
+        end
+    end
+    if again then watch.due = world_now_ms() + 2000 end
+end
+function watch.actor(cls, greg)
+    local now = world_now_ms()
+    if watch.world ~= world.switches then
+        watch.world, watch.at, watch.due = world.switches, {}, now + (cfg.watch_settle_ms or 10000)
+    end
+    if watch.due and now >= watch.due then watch.due = nil; watch.find_all() end
+    local at = watch.at[cls]
+    if not at then return nil end
+    local gx, gy, gz = 0, 0, 0
+    if greg then gx, gy, gz = location_of(greg) end
+    local r = cfg.watch_radius or 2500
+    if not (gx == 0 and gy == 0 and gz == 0) and (gx - at.x) ^ 2 + (gy - at.y) ^ 2 + (gz - at.z) ^ 2 > r * r then
+        return nil
+    end
+    local ok, o = pcall(StaticFindObject, at.path)
+    if ok and is_valid(o) then return o end
+    return nil
+end
+
 local function read_state()
     local s = { scalars = {}, quiet = {}, inventory = {}, missions = {}, tasks = {}, active = {} }
     local inv = find("FNAFInventorySystem")
@@ -236,7 +299,7 @@ local function read_state()
         end
     end
     for cls, props in pairs(cfg.watch_actor_props or {}) do
-        local obj = find(cls)
+        local obj = watch.actor(cls, greg)
         if obj then
             s.actors = s.actors or {}
             for _, p in ipairs(props) do
@@ -310,6 +373,7 @@ local function inventory_seen(n)
             try("RemoveItem " .. n, function() inv:RemoveItem(fname_add(n)) end)
         end
     end
+    return ok and act or nil
 end
 
 -- AP: block vanilla rewards
@@ -409,11 +473,60 @@ local function empty_opened(actor)
     local name = U.to_str(prop(actor, "ItemName"))
     local original, swapped = ap:original_name(name)
     if not swapped then return end
-    popup.pending[#popup.pending + 1] = { loc = ap.T.locations.collect[original], t = popup_now(), what = original }
+    local loc, now = ap.T.locations.collect[original], popup_now()
+    popup.pending[#popup.pending + 1] = { loc = loc, t = now, what = original }
     popup.armed = false
+    popup.veil()
+    if loc then popup.recent[loc], popup.last_loc, popup.last_t = now, loc, now end
     actor.ItemName = fname_add(ap:opened_name())
     log:write("Swap", string.format("%s opened: ItemName %s -> %s", U.short_object_name(full_name(actor)), name,
         U.to_str(prop(actor, "ItemName"))))
+end
+
+popup.recent = {}
+function popup.expect(loc, what, fresh, again)
+    if not loc or (apcfg.popup or {}).all_checks == false then return end
+    for _, e in ipairs(popup.pending) do
+        if e.loc == loc then return end
+    end
+    local now = popup_now()
+    if not again and popup.recent[loc] and now - popup.recent[loc] < 3 then return end
+    popup.recent[loc], popup.last_loc, popup.last_t = now, loc, now
+    popup.pending[#popup.pending + 1] = { loc = loc, t = now, what = what, fresh = fresh }
+    popup.armed = false
+    popup.veil()
+    log:write("AP", "popup expected for " .. tostring(what) .. " (location " .. tostring(loc) .. ")")
+end
+function popup.badge_location(actor)
+    local award = ap.T.locations.inventory[U.to_str(prop(actor, "BadgeAward")) or ""]
+    if award then return award end
+    local cls = (class_name(actor) or ""):lower()
+    local best, len
+    for item, id in pairs(ap.T.locations.inventory or {}) do
+        local suffix = item:match("^SecurityBadge(.+)$")
+        if suffix and cls:find(suffix:lower(), 1, true) and (not len or #suffix > len) then best, len = id, #suffix end
+    end
+    if not best then ap:once("badge class:" .. cls, "popup: no badge holder location for class " .. cls) end
+    return best
+end
+function popup.collect_opened(name)
+    local original, swapped = ap:original_name(name)
+    if swapped or (ap.cfg.listed_only or {})[original] then return end
+    popup.expect(ap.T.locations.collect[original], original)
+end
+function popup.inventory_added(n, act, new_check)
+    local fresh = (apcfg.popup or {}).late_fresh_s or 1.5
+    if new_check then return popup.expect(new_check, n, fresh) end
+    if act == "remove" and popup.last_loc and popup_now() - popup.last_t < 5 then
+        popup.expect(popup.last_loc, n, fresh, true)
+    end
+end
+function popup.vanilla_added(name)
+    if not (ap and ap:is_vanilla(name) and popup.notify_item) then return end
+    popup.notified = popup.notified or {}
+    if popup.notified[name] then return end
+    popup.notified[name] = true
+    popup.notify_item(name)
 end
 
 local condition_seen = {}
@@ -589,6 +702,20 @@ end
 
 local function snapshot(reason)
     local s = read_state()
+    if world.fresh_load and last_state ~= nil then
+        if not s.ready then return end
+        if s.clock_seconds == nil and world.fresh_tries < (cfg.fresh_load_tries or 5) then
+            world.fresh_tries = world.fresh_tries + 1
+            return
+        end
+        world.fresh_load = false
+        if s.clock_seconds and s.clock_seconds < 0 then
+            log:write("AP", string.format("new game (clock %.0f s): this state is the new baseline, the last save's items it may still hold are not checks (%d item(s))",
+                s.clock_seconds, #U.sorted_keys(s.inventory)))
+            last_state = s
+            return
+        end
+    end
     if last_state == nil then
         log:write("State", "baseline (" .. reason .. ")")
         for _, k in ipairs(U.sorted_keys(s.scalars)) do log:write("State", "  " .. k .. " = " .. s.scalars[k]) end
@@ -645,8 +772,11 @@ local function snapshot(reason)
     added, removed = U.diff_sets(last_state.inventory, s.inventory)
     for _, n in ipairs(added) do
         log:write("Change", "inventory + " .. n .. " (" .. reason .. ")")
+        local loc = ap and ap.T.locations.inventory[n]
+        local new_check = loc and not ap.checks[loc] and not ap:is_ap_name(n) and loc or nil
         ap_event("inventory", n)
-        inventory_seen(n)
+        popup.inventory_added(n, inventory_seen(n), new_check)
+        popup.vanilla_added(n)
     end
     for _, n in ipairs(removed) do log:write("Change", "inventory - " .. n .. " (" .. reason .. ")") end
     added, removed = U.diff_sets(last_state.missions, s.missions)
@@ -699,6 +829,13 @@ local function make_callback(spec, is_actor)
                 local picked = spec.check and U.to_str(prop(actor, "ItemName"))
                 if spec.check then ap_event(spec.check, picked) end
                 if spec.check == "collect" then empty_opened(actor) end
+                if ap and picked then
+                    if spec.check == "message" then popup.expect(ap.T.locations.message[picked], picked) end
+                    if spec.check == "collect" then popup.collect_opened(picked) end
+                end
+                if ap and spec.path:find(":Collect_SecurityBadge", 1, true) then
+                    popup.expect(popup.badge_location(actor), class_name(actor))
+                end
                 local dfi = (apcfg.daycare_flashlight or {}).item
                 if spec.check == "collect" and dfi and (picked == dfi or picked == (ap and ap:prefix() or "APX_") .. dfi) then
                     df_wake()
@@ -770,7 +907,13 @@ end
 local function retry_pending()
     local still = {}
     for _, spec in ipairs(pending) do
-        if not try_register(spec) then
+        local okf, fn = pcall(StaticFindObject, spec.path)
+        local loaded = okf and fn ~= nil and is_valid(fn)
+        if not loaded then spec.loaded_seen, spec.last_error = nil, "function not loaded" end
+        if loaded and not spec.loaded_seen and cfg.hook_settle ~= false then
+            spec.loaded_seen = true
+            still[#still + 1] = spec
+        elseif not (loaded and try_register(spec)) then
             spec.attempts = (spec.attempts or 0) + 1
             if spec.attempts >= cfg.hook_retry_max then
                 log:write("Hook", "giving up on " .. spec.path .. " (" .. tostring(spec.last_error) .. ")")
@@ -2797,6 +2940,7 @@ end
 dlm.UI = {
     button = "/Game/Blueprints/UI/TitleButton.TitleButton_C",
     combo = "/Game/Blueprints/UI/Title_ComboBox.Title_ComboBox_C",
+    check = "/Game/Blueprints/System/Debug/Title_CheckBox.Title_CheckBox_C",
     desc = "/Game/Blueprints/UI/MenuDescriptionUI.MenuDescriptionUI_C",
     lib = "/Script/UMG.Default__WidgetBlueprintLibrary",
     font = "/Game/Blueprints/UI/TitleAssets/good_times_rg_Font.good_times_rg_Font",
@@ -3085,16 +3229,51 @@ function dlm.fit_desc(d)
     if is_valid(so) then pcall(function() so:SetAutoWrapText(true) end) end
     return table.concat(done, ", ")
 end
-function dlm.page_label() return DL_MENU[(dlm.value or 0) + 1][2] end
+function dlm.locked() return not (ap and tonumber(ap.options.death_link) == 1 and dl_cfg().enabled ~= false) end
+function dlm.page_label()
+    if dlm.locked() then return dlm.pg().off_label or "Off for this slot" end
+    return DL_MENU[(dlm.value or 0) + 1][2]
+end
+function dlm.cards_label()
+    local pg = dlm.pg()
+    return dl.cards_blocked() and (pg.cards_on or "On") or (pg.cards_off or "Off")
+end
+function dlm.cards_set(on)
+    dl.cards_choice = on
+    log:write("AP", "Death Link menu: tooltips (instruction cards) now " .. (on and "blocked" or "shown like in the vanilla game")
+        .. " (until the game is closed)")
+end
+function dlm.cards_desc(d)
+    local pg = dlm.pg()
+    local long = dl.cards_blocked()
+        and (pg.cards_on_desc or "Checked: no instruction card (tooltip) ever shows, so none can get stuck on screen.")
+        or (pg.cards_off_desc or "Unchecked: instruction cards (tooltips) show like in the vanilla game.")
+    local tail = pg.cards_end or "Checked by default, checked again every time the game starts."
+    if tail ~= "" then long = long .. "\n\n" .. tail end
+    pcall(function() d:UpdateTitle(FText(pg.cards_row or "Disable Tooltips")) end)
+    pcall(function() d:UpdateShortDescription(FText(pg.cards_short or "Hides the game's instruction cards.")) end)
+    pcall(function() d:UpdateLongDescription(FText(long)) end)
+end
 function dlm.page_show(with_desc)
     local p = dlm.page
     if not p then return end
     local combo = obj_at(p.combo)
     if combo then
         pcall(function() combo.ComboBoxText:SetText(FText(dlm.page_label())) end)
-        pcall(function() combo.SettingsName_text:SetText(FText(dlm.pg().row or "Death Link killer")) end)
+        pcall(function() combo.SettingsName_text:SetText(FText(dlm.pg().row or "Deathlink Behavior")) end)
     end
-    if with_desc or p.desc_shown then
+    local cards = obj_at(p.cards)
+    if cards and p.cards_kind == "check" then
+        pcall(function() cards.Title_Text:SetText(FText(dlm.pg().cards_row or "Disable Tooltips")) end)
+        if prop(cards, "Checked") ~= dl.cards_blocked() then pcall(function() cards:StartingValue(dl.cards_blocked()) end) end
+    elseif cards then
+        pcall(function() cards.ComboBoxText:SetText(FText(dlm.cards_label())) end)
+        pcall(function() cards.SettingsName_text:SetText(FText(dlm.pg().cards_row or "Disable Tooltips")) end)
+    end
+    if (with_desc or p.desc_shown) and p.desc_for == "cards" then
+        local d = obj_at(p.desc)
+        if d then dlm.cards_desc(d); p.desc_shown = true end
+    elseif with_desc or p.desc_shown then
         local d = obj_at(p.desc)
         if d then
             local pg = dlm.pg()
@@ -3102,8 +3281,12 @@ function dlm.page_show(with_desc)
             local long = (pg.descriptions or {})[name] or dlm.DESC[name] or name
             local tail = pg.long_end or "When another player of the multiworld dies (Death Link), this animatronic comes for you. Back to your YAML setting every time the game starts."
             if name == "Disabled" then tail = pg.disabled_end or "Until the game is closed or you pick an animatronic again." end
+            if dlm.locked() then
+                long = pg.off_desc or "Death Link is off for this slot (death_link in your YAML). Turn it on in your YAML to pick who comes for you here."
+                tail = ""
+            end
             if tail ~= "" then long = long .. "\n\n" .. tail end
-            pcall(function() d:UpdateTitle(FText(pg.desc_title or pg.row or "Death Link killer")) end)
+            pcall(function() d:UpdateTitle(FText(pg.desc_title or pg.row or "Deathlink Behavior")) end)
             pcall(function() d:UpdateShortDescription(FText(pg.short or "Who comes for you when another player dies.")) end)
             pcall(function() d:UpdateLongDescription(FText(long)) end)
             if not p.text_done then
@@ -3117,12 +3300,46 @@ function dlm.page_show(with_desc)
         end
     end
 end
+function dlm.overlay_open(p, open)
+    local host, page = obj_at(p.host), obj_at(p.page)
+    if not (host and page) then return end
+    if open then
+        local hid = {}
+        local n = n_of(call(host, "GetChildrenCount")) or 0
+        for i = 0, n - 1 do
+            local c = call(host, "GetChildAt", i)
+            if is_valid(c) and obj_path(c) ~= p.page then
+                local v = n_of(call(c, "GetVisibility"))
+                if v ~= 1 and pcall(function() c:SetVisibility(1) end) then hid[#hid + 1] = { path = obj_path(c), v = v or 0 } end
+            end
+        end
+        p.hidden = hid
+        pcall(function() page:SetVisibility(4) end)
+        p.where = string.format(" (over the pause page, %d hidden)", #hid)
+        p.open = true
+        dlm.page_show(true)
+        local combo = obj_at(p.combo)
+        if combo then pcall(function() combo:SetKeyboardFocus() end) end
+    else
+        p.desc_for = nil
+        pcall(function() page:SetVisibility(1) end)
+        for _, h in ipairs(p.hidden or {}) do
+            local c = obj_at(h.path)
+            if c then pcall(function() c:SetVisibility(h.v) end) end
+        end
+        p.hidden = nil
+        p.open = false
+        local b = obj_at(p.button)
+        if b then pcall(function() b:SetKeyboardFocus() end) end
+    end
+end
 function dlm.page_open(open)
     local p = dlm.page
     if not p then return end
     local sw = obj_at(p.switcher)
-    if not sw then return end
-    if open then
+    if p.mode == "overlay" then dlm.overlay_open(p, open)
+    elseif not sw then return
+    elseif open then
         local pg = obj_at(p.page)
         if pg then pcall(function() sw:SetActiveWidget(pg) end) end
         p.where = string.format(" (page %s of %s, shown %s)", tostring(pg and n_of(call(sw, "GetChildIndex", pg))),
@@ -3142,24 +3359,61 @@ end
 function dlm.page_clicked(path)
     local p = dlm.page
     if not (p and path) then return false end
-    if path == p.button then dlm.page_open(true); return true end
+    if path == p.button then
+        if not p.open then dlm.page_open(true) end
+        return true
+    end
     if path == p.back then dlm.page_open(false); return true end
     return false
 end
 function dlm.page_cycle(ctx, delta, from_cycle)
     local p = dlm.page
-    local w = U.unwrap(ctx)
-    if not (p and obj_path(w) == p.combo) then return end
+    local path = obj_path(U.unwrap(ctx))
+    if not (p and path and (path == p.combo or path == p.cards)) then return end
+    p.desc_for = path == p.cards and "cards" or "dl"
     if from_cycle then dlm.cycle_seen = true
-    elseif dlm.cycle_seen then dlm.page_show(); return end
+    elseif dlm.cycle_seen then dlm.page_show(true); return end
+    if path == p.cards then dlm.cards_set(not dl.cards_blocked()); dlm.page_show(true); return end
+    if dlm.locked() then dlm.page_show(true); return end
     if not delta or delta == 0 then delta = 1 end
     delta = delta > 0 and 1 or -1
     dlm.choose(((dlm.value or 0) + delta) % #DL_MENU)
     dlm.page_show(true)
 end
+function dlm.cards_clicked(ctx)
+    local p = dlm.page
+    local w = U.unwrap(ctx)
+    if not (p and p.cards_kind == "check" and obj_path(w) == p.cards) then return end
+    local was, now_c = dl.cards_blocked(), prop(w, "Checked")
+    local new = not was
+    dlm.cards_set(new)
+    if now_c ~= new then pcall(function() w:StartingValue(new) end) end
+    p.desc_for = "cards"
+    dlm.page_show(true)
+end
+function dlm.check_hooks()
+    if dlm.check_hooked ~= nil then return dlm.check_hooked end
+    local K = dlm.UI.check .. ":"
+    local hooks = {
+        { K .. "BndEvt__Title_CheckBox_Button_0_K2Node_ComponentBoundEvent_0_OnButtonClickedEvent__DelegateSignature", dlm.cards_clicked },
+        { K .. "BndEvt__Title_CheckBox_Button_0_K2Node_ComponentBoundEvent_1_OnButtonHoverEvent__DelegateSignature", dlm.page_hover },
+        { K .. "BndEvt__Title_CheckBox_Button_0_K2Node_ComponentBoundEvent_3_OnButtonHoverEvent__DelegateSignature", dlm.page_hover },
+        { K .. "OnAddedToFocusPath", dlm.page_hover },
+    }
+    dlm.check_hooked = true
+    for i, h in ipairs(hooks) do
+        local fn = h[2]
+        local okh = pcall(RegisterHook, h[1], function(...) local a = { ... }; try("archipelago options", function() fn(table.unpack(a)) end) end)
+        if not okh and i == 1 then dlm.check_hooked = false; dlm_say("checkbox click hook not set: the tooltips row is a < On / Off > row"); break end
+    end
+    return dlm.check_hooked
+end
 function dlm.page_hover(ctx)
     local p = dlm.page
-    if p and obj_path(U.unwrap(ctx)) == p.combo then dlm.page_show(true) end
+    local path = p and obj_path(U.unwrap(ctx))
+    if not path or (path ~= p.combo and path ~= p.cards) then return end
+    p.desc_for = path == p.cards and "cards" or "dl"
+    dlm.page_show(true)
 end
 function dlm.page_back(ctx)
     local p = dlm.page
@@ -3172,8 +3426,10 @@ function dlm.pause_built(ctx)
     if not path or path:find("Default__", 1, true) or not is_valid(pause) then return end
     local mc = dl_cfg().pause_menu or {}
     if mc.enabled == false or world_busy() or dlm.page_failed or (mc.style or "page") ~= "page" then return end
-    if not (ap and tonumber(ap.options.death_link) == 1 and dl_cfg().enabled ~= false) then return end
-    ExecuteWithDelay(dlm.pg().construct_delay_ms or 1, function()
+    if not ap then return end
+    local delay = dlm.pg().construct_delay_ms or 0
+    if delay <= 0 then dlm.page_tick(pause); return end
+    ExecuteWithDelay(delay, function()
         on_game_thread("archipelago options (pause menu made)", function()
             if world_busy() or dlm.page_failed then return end
             local pz = obj_at(path)
@@ -3203,6 +3459,7 @@ function dlm.page_hooks()
         { C .. "BndEvt__Title_ComboBox_Button_0_K2Node_ComponentBoundEvent_5_OnButtonHoverEvent__DelegateSignature", dlm.page_hover },
         { C .. "OnAddedToFocusPath", dlm.page_hover },
         { "/Game/Blueprints/UI/PauseUI.PauseUI_C:InputBack", dlm.page_back },
+        { "/Game/Blueprints/UI/PauseUI.PauseUI_C:OpenInventoryMenu", dlm.inventory_opened },
     }
     local bad = {}
     for _, h in ipairs(hooks) do
@@ -3211,6 +3468,26 @@ function dlm.page_hooks()
         if not okh then bad[#bad + 1] = h[1]:match(":(.+)$") end
     end
     if #bad > 0 then dlm_say("page hooks not set: " .. table.concat(bad, ", ")) end
+end
+function dlm.inventory_opened(ctx)
+    local p = dlm.page
+    if not p or (dlm.inv_said or 0) >= 5 then return end
+    dlm.inv_said = (dlm.inv_said or 0) + 1
+    local sw = obj_at(p.switcher)
+    log:write("AP", string.format("Death Link menu: the game's Inventory opened (pause page %s of %s shown, Archipelago Options %s)",
+        tostring(sw and n_of(call(sw, "GetActiveWidgetIndex"))), tostring(sw and n_of(call(sw, "GetChildrenCount"))),
+        p.open and "open" or "closed"))
+end
+function dlm.page_intact(pause, p)
+    local btn, page = obj_at(p.button), obj_at(p.page)
+    if not (btn and page) then return false end
+    local inv = prop(pause, dlm.pg().after or "InventoryButton")
+    local box = is_valid(inv) and call(inv, "GetParent") or nil
+    if obj_path(call(btn, "GetParent")) ~= obj_path(box) or obj_path(call(page, "GetParent")) ~= p.host then
+        dlm_say("Archipelago Options taken out of the pause menu by the game: added again")
+        return false
+    end
+    return true
 end
 function dlm.add_desc(hb, desc, sb, add)
     local t = { sv = 0.5, sr = 1, h = 3, t = 63, r = -25, l = 0, b = 0 }
@@ -3257,7 +3534,7 @@ function dlm.build_page(pause)
     if not dlm.hook_click() then return nil, "no click hook" end
     dlm.page_hooks()
     dlm.construct_hook()
-    local old_out = dlm.remove_ours(box) + dlm.remove_ours(sw)
+    local old_out = dlm.remove_ours(box) + dlm.remove_ours(pov) + dlm.remove_ours(sw)
     local tree = prop(pause, "WidgetTree")
     if not is_valid(tree) then tree = pause end
     local pc = call(pause, "GetOwningPlayer")
@@ -3272,6 +3549,13 @@ function dlm.build_page(pause)
     local page, hb, left, rows, tov = new(U_.Overlay), new(U_.HorizontalBox), new(U_.Overlay), new(U_.VerticalBox), new(U_.Overlay)
     local title, backing = new(U_.TextBlock), new(U_.Image)
     local combo, desc, back = bp(ccls), bp(dcls), bp(bcls)
+    local cards, cards_kind = nil, nil
+    if pg.cards_row ~= false then
+        local ck = (pg.cards_style or "check") == "check" and obj_at(dlm.UI.check) or nil
+        if ck and dlm.check_hooks() then cards, cards_kind = bp(ck), "check" end
+        if cards then pcall(function() cards:StartingValue(dl.cards_blocked()) end)
+        else cards, cards_kind = bp(ccls), "combo" end
+    end
     if not (page and hb and left and rows and tov and title and backing and combo and desc and back) then
         return nil, "widgets not made"
     end
@@ -3289,6 +3573,7 @@ function dlm.build_page(pause)
         and add(tov, "AddChildToOverlay", backing, { h = 2, v = 2 })
         and add(tov, "AddChildToOverlay", title, { h = 2, v = 2 })
         and add(rows, "AddChildToVerticalBox", combo, { r = pg.row_right or 80, l = 0, t = 0, b = 0 })
+        and (not cards or add(rows, "AddChildToVerticalBox", cards, { r = pg.row_right or 80, l = 0, t = pg.row_gap or 0, b = 0 }))
         and add(rows, "AddChildToVerticalBox", back, { t = pg.back_top or 40, l = 0, r = 0, b = 0, h = 1 })
     if not ok then return nil, "page not assembled" end
     local tex, font = obj_at(dlm.UI.backing), obj_at(dlm.UI.font)
@@ -3299,29 +3584,40 @@ function dlm.build_page(pause)
     pcall(function() title:SetText(FText(pg.title or "ARCHIPELAGO")) end)
     local _, back_font = dlm.copy_button_style(back, inv)
     pcall(function() back["Set Display"](back, FText(pg.back or "Back")) end)
-    if not pcall(function() sw:AddChild(page) end) then return nil, "page not added to the switcher" end
+    local in_sw = (pg.host or "overlay") == "switcher"
+    local host = in_sw and sw or pov
+    if in_sw then
+        if not pcall(function() sw:AddChild(page) end) then return nil, "page not added to the switcher" end
+    else
+        if not add(pov, "AddChildToOverlay", page, { h = 0, v = 0 }) then return nil, "page not added over the pause page" end
+        pcall(function() page:SetVisibility(1) end)
+    end
     local btn = bp(bcls)
-    if not btn then pcall(function() sw:RemoveChild(page) end); return nil, "button not made" end
+    if not btn then pcall(function() host:RemoveChild(page) end); return nil, "button not made" end
     local styled, font_how = dlm.copy_button_style(btn, inv)
     pcall(function() btn["Set Display"](btn, FText(pg.button or "Archipelago Options")) end)
     local okb, moved = dlm.insert_after(box, inv, btn)
-    if not okb then pcall(function() sw:RemoveChild(page) end); return nil, "button not added after " .. (pg.after or "InventoryButton") end
+    if not okb then pcall(function() host:RemoveChild(page) end); return nil, "button not added after " .. (pg.after or "InventoryButton") end
     dlm.value = dlm_index(dl_behavior())
     dlm.ours = dlm.ours or {}
     dlm.ours[obj_path(btn) or "?"], dlm.ours[obj_path(page) or "?"] = true, true
     if old_out > 0 then log:write("AP", "Death Link menu: " .. old_out .. " old Archipelago Options widget(s) taken out first") end
     dlm.page = { pause = obj_path(pause), button = obj_path(btn), page = obj_path(page), switcher = obj_path(sw),
-                 combo = obj_path(combo), desc = obj_path(desc), back = obj_path(back), open = false }
+                 host = obj_path(host), mode = in_sw and "switcher" or "overlay",
+                 combo = obj_path(combo), cards = cards and obj_path(cards) or nil, cards_kind = cards_kind,
+                 desc = obj_path(desc), back = obj_path(back), open = false }
     dlm.page_show()
-    log:write("AP", string.format("Death Link menu: Archipelago Options button added after %s (%d below moved down, %d style fields copied, %s; Back: %s), page added (%s), showing %s",
-        pg.after or "InventoryButton", moved or 0, styled, tostring(font_how), tostring(back_font), tostring(dlm.desc_how), dlm.page_label()))
+    log:write("AP", string.format("Death Link menu: Archipelago Options button added after %s (%d below moved down, %d style fields copied, %s; Back: %s), page added %s (%s), showing %s",
+        pg.after or "InventoryButton", moved or 0, styled, tostring(font_how), tostring(back_font),
+        in_sw and "to the pause page switcher" or "over the pause page", tostring(dlm.desc_how), dlm.page_label()))
     return true
 end
 function dlm.page_tick(pause)
     local mc = dl_cfg().pause_menu or {}
     local key = obj_path(pause) or "?"
     local p = dlm.page
-    if p and p.pause == key and obj_at(p.button) then return end
+    if p and p.pause == key and dlm.page_intact(pause, p) then return end
+    if p and p.open then dlm.page_open(false) end
     dlm.page = nil
     local tk = "page " .. key
     dlm.tries[tk] = (dlm.tries[tk] or 0) + 1
@@ -3595,7 +3891,7 @@ local EFFECTS = {
                 local w = pc and num(call(pc, "GetInputAxisValue", fname_add(ax)))
                 if w and math.abs(w) > 0.2 then seen[#seen + 1] = "controller " .. ax end
             end
-            if pc then
+            if pc and ec.key_poll then
                 for _, k in ipairs(ec.keys or { "W", "A", "S", "D" }) do
                     local okk, down = pcall(function() return pc:IsInputKeyDown({ KeyName = fname_add(k) }) end)
                     if okk and down == true then seen[#seen + 1] = "key " .. k end
@@ -3773,12 +4069,12 @@ local function effects_tick()
         end
     end
 end
-pcall(RegisterHook, "/Script/fnaf9.WorldStateSystem:SetCanCallFreddy", function()
+if cfg.native_hooks_enabled then pcall(RegisterHook, "/Script/fnaf9.WorldStateSystem:SetCanCallFreddy", function()
     local e = effects.recharge
     if not e or effects_setting then return end
     local ws = find("WorldStateSystem")
     if ws then e.want = call(ws, "CanCallFreddy") == true end
-end)
+end) end
 
 local function run_action(inv, a)
     if a.op == "task" then
@@ -3830,6 +4126,164 @@ local function find_live(cls)
 end
 
 local function now() return (type(AP_CLOCK) == "function" and AP_CLOCK()) or os.time() end
+
+dl.awards = { why = "not loaded yet", free_since = nil }
+function dl.hold_on()
+    return (apcfg.instruction_cards or {}).hold ~= false and not dl.cards_blocked()
+end
+function dl.player_busy()
+    local cc = apcfg.instruction_cards or {}
+    if world.loading and world_now() < world.loading then return "loading screen" end
+    if world.loaded_at and world_now() - world.loaded_at < (cc.after_load_s or 15) then return "just loaded" end
+    local pc = controller()
+    if not pc then return "no player controller" end
+    local pawn = call(pc, "K2_GetPawn")
+    local pn = is_valid(pawn) and ((full_name(pawn) or ""):match("^(%S+)") or "?") or "nil"
+    if pn ~= (cc.player_pawn or "Gregory_C") then return "playing as " .. pn end
+    if prop(pc, "IsPlaySequenceRunning?") == true then return "cinematic" end
+    local vt = call(pc, "GetViewTarget")
+    local vc = is_valid(vt) and ((full_name(vt) or ""):match("^(%S+)") or "") or ""
+    if vc:find("Camera", 1, true) then return "cinematic (view through " .. vc .. ")" end
+    return nil
+end
+function dl.ui_hooks()
+    if dl.ui_hooked then return end
+    local gi = "/Game/Blueprints/System/FNAFGameInstance.FNAFGameInstance_C:"
+    local ok1 = pcall(RegisterHook, gi .. "OnLoadingScreenStart", function()
+        world.loading = world_now() + ((apcfg.instruction_cards or {}).loading_max_s or 60)
+    end)
+    local ok2 = pcall(RegisterHook, gi .. "OnLoadingScreenEnd", function() world.loading, world.loaded_at = nil, world_now() end)
+    local ok3 = (apcfg.instruction_cards or {}).hold == false or pcall(RegisterHook,
+        "/Game/Blueprints/UI/PlayerHUD.PlayerHUD_C:ShowInstructions", function(_, typ)
+            local t = nil
+            pcall(function() t = tonumber(typ:get()) end)
+            on_game_thread("instruction card", function() dl.card_shown(t) end)
+        end)
+    if ok1 and ok2 and ok3 then
+        dl.ui_hooked = true
+        log:write("AP", "loading screen and instruction card hooks set")
+    end
+end
+function dl.card_shown(t)
+    if not dl.cards_blocked() then
+        if t then popup.cards.by_mod[t] = nil end
+        return
+    end
+    local gi = find("FNAFGameInstance_C")
+    log:write("AP", string.format("instruction card %s opened anyway (%s, %d card(s) marked as seen)", tostring(t),
+        dl.player_busy() or "player free", gi and #dl.cards_seen(gi) or -1))
+end
+popup.cards = { marked_for = nil, triggers = {}, scan_next = 0, by_mod = {} }
+function dl.cards_blocked()
+    if dl.cards_choice ~= nil then return dl.cards_choice end
+    return (apcfg.instruction_cards or {}).none ~= false
+end
+function dl.cards_seen(gi)
+    return U.list_from_array(prop(gi, "InstructionCardsSeen"), function(v) return U.to_str(v) end)
+end
+function dl.cards_mark()
+    local cc = apcfg.instruction_cards or {}
+    local gi = find("FNAFGameInstance_C")
+    if not gi then return end
+    local n = cc.types or 48
+    local before = dl.cards_seen(gi)
+    local called = 0
+    local by_mod = popup.cards.by_mod
+    for t = 0, n - 1 do
+        local k = #dl.cards_seen(gi)
+        if pcall(function() gi:InstructionCardViewed(t, {}) end) then called = called + 1 end
+        if #dl.cards_seen(gi) > k then by_mod[t] = true end
+    end
+    local after = dl.cards_seen(gi)
+    local written = 0
+    local prefix = nil
+    for _, e in ipairs(after) do prefix = prefix or e:match("^(.-)%d+$") end
+    if prefix and #after < n then
+        local have = {}
+        for _, e in ipairs(after) do have[e] = true end
+        local arr = prop(gi, "InstructionCardsSeen")
+        for t = 0, n - 1 do
+            local name = prefix .. t
+            if not have[name] and pcall(function() arr[#dl.cards_seen(gi) + 1] = name end) then
+                written = written + 1
+                by_mod[t] = true
+            end
+        end
+        after = dl.cards_seen(gi)
+    end
+    log:write("AP", string.format("instruction cards marked as seen: %d in the list (was %d; InstructionCardViewed called %d times, %d written by name%s)%s",
+        #after, #before, called, written, prefix and (" '" .. prefix .. "N'") or ", no name seen yet",
+        #after > 0 and (": " .. table.concat(after, ", ", 1, math.min(#after, 6)) .. (#after > 6 and ", ..." or "")) or ""))
+end
+function dl.cards_unmark()
+    local c = popup.cards
+    local gi = find("FNAFGameInstance_C")
+    local emptied, kept = false, 0
+    if gi and c.marked_for ~= nil then
+        local arr = prop(gi, "InstructionCardsSeen")
+        emptied = arr ~= nil and pcall(function() arr:Empty() end) and #dl.cards_seen(gi) == 0
+        if emptied then
+            for t = 0, ((apcfg.instruction_cards or {}).types or 48) - 1 do
+                if not c.by_mod[t] and pcall(function() gi:InstructionCardViewed(t, {}) end) then kept = kept + 1 end
+            end
+        end
+    end
+    local back = 0
+    for key in pairs(c.triggers) do
+        local t = obj_at(key:match(" (.+)$"))
+        if t then call(t, "SetActorEnableCollision", true); back = back + 1 end
+    end
+    log:write("AP", string.format("instruction cards shown like vanilla: %s, %d trigger(s) on again",
+        c.marked_for == nil and "none marked" or (emptied and string.format("seen list emptied (%d seen by the player marked again)", kept)
+            or "seen list NOT emptied (cards stay hidden until the game restarts)"), back))
+    c.marked_for, c.triggers, c.by_mod, c.scan_next = nil, {}, {}, 0
+end
+function dl.cards_tick()
+    local cc = apcfg.instruction_cards or {}
+    local c = popup.cards
+    if not dl.cards_blocked() then
+        if c.marked_for ~= nil or next(c.triggers) then try("instruction cards back", dl.cards_unmark) end
+        return
+    end
+    if c.marked_for ~= world.switches and last_state and last_state.ready then
+        c.marked_for = world.switches
+        try("instruction cards", dl.cards_mark)
+    end
+    local now_ms = world_now_ms()
+    if now_ms >= c.scan_next and not pickup_quiet() then
+        c.scan_next = now_ms + (cc.trigger_scan_ms or 10000)
+        for _, t in ipairs(FindAllOf(cc.trigger_class or "InstructionCardTrigger_C") or {}) do
+            local key = is_valid(t) and full_name(t)
+            if key and not key:find("Default__", 1, true) and call(t, "GetActorEnableCollision") ~= false then
+                call(t, "SetActorEnableCollision", false)
+                if not c.triggers[key] then
+                    c.triggers[key] = true
+                    log:write("AP", "instruction card trigger off: " .. (key:match("([^%.:]+)$") or key))
+                end
+            end
+        end
+    end
+end
+function dl.awards_tick()
+    local a = dl.awards
+    local why = dl.player_busy()
+    local now_ms = world_now_ms()
+    if why then
+        a.free_since = nil
+        if a.why ~= why then
+            if a.why == nil then log:write("AP", "items that can open an instruction card held: " .. why) end
+            a.why = why
+        end
+        return
+    end
+    if a.why == nil then return end
+    a.free_since = a.free_since or now_ms
+    local settle = (apcfg.instruction_cards or {}).settle_ms or 3000
+    if now_ms - a.free_since >= settle then
+        log:write("AP", string.format("items given again: Gregory has had control for %d s (held: %s)", settle // 1000, a.why))
+        a.why, a.free_since = nil, nil
+    end
+end
 
 local ESLATE_VISIBLE, ESLATE_COLLAPSED, ESLATE_HIDDEN = 0, 1, 2
 local PROMPT_PARTS = { "KeyBindingIcon", "HoldProgress", "InformationItemImage", "InformationBackground" }
@@ -3920,6 +4374,36 @@ local function popup_label(entry)
     end
     return string.format(pc.other_format or "%s (%s)", s.name, s.player), nil, class .. " item for " .. s.player, class
 end
+function popup.veil()
+    if (apcfg.popup or {}).veil == false or popup.veiled or popup.veil_entry == popup.pending[1] then return end
+    local hud = find_live("PlayerHUD_C")
+    local w = hud and prop(hud, "Informational")
+    local img = hud and prop(hud, "InformationItemImage")
+    if not (is_valid(w) and is_valid(img)) then return end
+    local v = { t = popup_now() }
+    pcall(function() v.text = w:GetVisibility() end)
+    pcall(function() v.img = img:GetVisibility() end)
+    pcall(function() w:SetVisibility(ESLATE_HIDDEN) end)
+    pcall(function() img:SetVisibility(ESLATE_HIDDEN) end)
+    popup.veiled, popup.veil_entry = v, popup.pending[1]
+end
+function popup.unveil(ours)
+    local v = popup.veiled
+    if not v then return end
+    popup.veiled = nil
+    local hud = find_live("PlayerHUD_C")
+    local w = hud and prop(hud, "Informational")
+    local img = hud and prop(hud, "InformationItemImage")
+    if is_valid(w) then
+        local tv = tonumber(v.text)
+        if tv == nil or tv == ESLATE_HIDDEN or tv == ESLATE_COLLAPSED then tv = 4 end
+        pcall(function() w:SetVisibility(tv) end)
+    end
+    if is_valid(img) and not ours then
+        local iv = tonumber(v.img)
+        if iv ~= nil and iv ~= ESLATE_HIDDEN then pcall(function() img:SetVisibility(iv) end) end
+    end
+end
 popup.custom, popup.failed = {}, {}
 local function custom_icon(ctx, file)
     if popup.failed[file] then return nil end
@@ -3963,7 +4447,8 @@ local function popup_tick(why)
         local old = table.remove(popup.pending, 1)
         log:write("AP", "popup: no popup seen for " .. tostring(old.what) .. " within " .. (pc.window_s or 8) .. " s")
     end
-    if #popup.pending == 0 then return end
+    if #popup.pending == 0 then popup.unveil(); return end
+    if popup.veiled and popup_now() - popup.veiled.t > (pc.veil_s or 2) then popup.unveil() end
     local trace = pc.trace ~= false
     local hud = find_live("PlayerHUD_C")
     local anim = hud and prop(hud, "InformationAnim")
@@ -3981,7 +4466,7 @@ local function popup_tick(why)
     local started
     if not popup.armed then
         popup.armed = true
-        started = playing and at ~= nil and at <= (pc.fresh_s or 0.4)
+        started = playing and at ~= nil and at <= ((popup.pending[1] or {}).fresh or pc.fresh_s or 0.4)
         if trace then pstep(string.format("%s: armed, animation %s%s", why,
             playing and ("playing at " .. tostring(at)) or "stopped", started and " (just started: ours)" or "")) end
     else
@@ -3991,6 +4476,7 @@ local function popup_tick(why)
         pstep(string.format("%s: animation %s", why, playing and ("started at " .. tostring(at)) or "stopped"))
     end
     popup.was_playing, popup.last_at = playing, at
+    if not playing and not started then popup.veil() end
     if not started then return end
     local entry = table.remove(popup.pending, 1)
     popup.armed = #popup.pending == 0 or popup.armed
@@ -4012,6 +4498,7 @@ local function popup_tick(why)
         end
     end
     popup.done_once = true
+    popup.unveil(oki)
     log:write("AP", string.format("popup (%s): %s -> %s [%s, %s%s]%s", why, entry and entry.what or "?", text, kind, where,
         oki and "" or " NOT set", okt and "" or " TEXT NOT SET"))
 end
@@ -4035,6 +4522,11 @@ function dl.popup_fade_tick()
     pcall(function() img:SetRenderOpacity(1) end)
     popup.fade, popup.icon_hidden = nil, true
 end
+function dl.popup_inventory_now()
+    if ap and (apcfg.popup or {}).all_checks ~= false and not world_busy() then snapshot("popup") end
+    if #popup.pending > 0 then popup_tick("hook") return end
+    if popup.icon_hidden then dl.popup_icon_back() end
+end
 function dl.popup_icon_back()
     if not popup.icon_hidden then return end
     popup.icon_hidden = false
@@ -4048,6 +4540,19 @@ end
 
 dl.nt = { queue = {}, seen = nil, header = nil, retry_at = 0 }
 function dl.nt_cfg() return apcfg.received_notify or {} end
+popup.notify_item = function(game_name)
+    local nc = dl.nt_cfg()
+    if nc.enabled == false then return end
+    for id, it in pairs(APT.items or {}) do
+        for _, n in ipairs(it.names or {}) do
+            if n == game_name then
+                if #dl.nt.queue < (nc.max_queue or 8) then dl.nt.queue[#dl.nt.queue + 1] = id end
+                log:write("AP", "notify: " .. tostring(it.name) .. " added to the inventory, shown like an item received")
+                return
+            end
+        end
+    end
+end
 function dl.notify_poll()
     local nc, nt = dl.nt_cfg(), dl.nt
     if nc.enabled == false or not ap then return end
@@ -4318,15 +4823,74 @@ local function prompt_tick()
 end
 
 local locked_pickups = {}
-local function lock_near(a, h)
+local function lock_near_at(x, y, z, h)
     if not h.message or apcfg.show_messages == false then return nil end
     local greg = find("Gregory_C")
     if not greg then return nil end
     local gx, gy, gz = location_of(greg)
-    local x, y, z = location_of(a)
     local r = h.radius or 600
     if (gx - x) ^ 2 + (gy - y) ^ 2 + (gz - z) ^ 2 > r * r then return nil end
     return { x = x, y = y, z = z + (h.z_offset or 0), range = h.look or 350, text = h.message }
+end
+local function lock_near(a, h)
+    if not h.message or apcfg.show_messages == false then return nil end
+    local x, y, z = location_of(a)
+    return lock_near_at(x, y, z, h)
+end
+
+dl.scans = { cache = {}, budget = 0, switches = nil }
+function dl.find_all(cls)
+    local every = apcfg.scan_refresh_ms or 10000
+    if every <= 0 then return FindAllOf(cls) or {} end
+    local s, now = dl.scans, world_now_ms()
+    if s.switches ~= world.switches then s.switches, s.cache = world.switches, {} end
+    local c = s.cache[cls]
+    if not c or (now >= c.next and s.budget > 0) then
+        if c then s.budget = s.budget - 1 end
+        local list, paths = {}, {}
+        for _, a in ipairs(FindAllOf(cls) or {}) do
+            local p = is_valid(a) and obj_path(a)
+            if p then list[#list + 1] = a; paths[#paths + 1] = p end
+        end
+        s.cache[cls] = { paths = paths, next = now + every }
+        return list
+    end
+    local list = {}
+    for _, p in ipairs(c.paths) do
+        local a = obj_at(p)
+        if a then list[#list + 1] = a end
+    end
+    return list
+end
+function dl.lock_scan(cls, allow, locked)
+    if allow then
+        local pre = cls .. " "
+        for key in pairs(locked) do
+            if key:sub(1, #pre) == pre then return dl.find_all(cls) end
+        end
+        return {}
+    end
+    return dl.find_all(cls)
+end
+dl.poll_steps = {}
+function dl.timed(name, fn, ...)
+    local t0 = os.clock()
+    local ok, err = try(name, fn, ...)
+    dl.poll_steps[#dl.poll_steps + 1] = { name, (os.clock() - t0) * 1000 }
+    return ok, err
+end
+function dl.poll_report()
+    local limit = cfg.slow_poll_ms or 40
+    local steps, total = dl.poll_steps, 0
+    dl.poll_steps = {}
+    if limit <= 0 then return end
+    for _, s in ipairs(steps) do total = total + s[2] end
+    if total < limit or os.clock() < (dl.slow_next or 0) then return end
+    dl.slow_next = os.clock() + 30
+    table.sort(steps, function(a, b) return a[2] > b[2] end)
+    local parts = {}
+    for i = 1, math.min(#steps, 6) do parts[#parts + 1] = string.format("%s %.0f", steps[i][1], steps[i][2]) end
+    log:write("Perf", string.format("slow poll: %.0f ms (%s ms)", total, table.concat(parts, ", ")))
 end
 
 local function lock_pickups_tick(missions)
@@ -4334,7 +4898,7 @@ local function lock_pickups_tick(missions)
     local near = nil
     for cls, h in pairs(apcfg.lock_pickups or {}) do
         local allow = missions[h.until_mission] == true
-        for _, a in ipairs(FindAllOf(cls) or {}) do
+        for _, a in ipairs(dl.lock_scan(cls, allow, locked_pickups)) do
             if is_valid(a) then
                 local key = full_name(a)
                 local short_key = key:match("([^%.:]+)$") or key
@@ -4357,6 +4921,208 @@ local function lock_pickups_tick(missions)
 end
 
 local held_triggers = {}
+dl.om = { seen_undone = false, remove_at = nil, removed = 0, said = {}, near = {}, next_near = 0,
+          swapped = false, award_hooked = nil, world = nil, why = nil, due = {}, unrestricted = {} }
+local function om_say(key, text)
+    if not dl.om.said[key] then dl.om.said[key] = true; log:write("AP", text) end
+end
+local function om_watched(c, path)
+    for _, list in ipairs({ c.doors or {}, c.freddy_doors or {} }) do
+        for _, p in ipairs(list) do if p == path then return true end end
+    end
+    return false
+end
+local function om_set_due(key, at)
+    local d = dl.om.due
+    if not d[key] or at > d[key] then d[key] = at end
+end
+function dl.office_appeared(actor, cls)
+    local c = apcfg.office_monty or {}
+    if c.enabled == false then return end
+    local w, now = c.watch or {}, world_now_ms()
+    for key, classes in pairs(w) do
+        for _, k in ipairs(classes) do
+            if k == cls then
+                if key == "doors" then
+                    local path = obj_path(actor)
+                    if path and om_watched(c, path) then
+                        dl.om.unrestricted[path] = nil
+                        om_set_due("doors", now + (c.settle_ms or 10000))
+                    end
+                else
+                    om_set_due(key, now + (c.appear_ms or 1000))
+                end
+            end
+        end
+    end
+end
+function dl.office_award(name)
+    if not ap then return end
+    local original, swapped = ap:original_name(name)
+    if not swapped then return end
+    local id = ap.T.locations.collect[original]
+    if not id then return end
+    if not ap.checks[id] then log:write("AP", "lobby office camera button: minigame done, AP location for " .. original) end
+    ap_event("collect", name)
+    popup.expect(id, original)
+end
+local function om_award_hook(c)
+    if dl.om.award_hooked ~= nil or not c.award_hook then return end
+    local okh, err = pcall(RegisterHook, c.award_hook, function(ctx)
+        try("office award", function()
+            local award = U.to_str(prop(U.unwrap(ctx), "ItemAward"))
+            if award and award:sub(1, #ap:prefix()) == ap:prefix() then dl.office_award(award) end
+        end)
+    end)
+    dl.om.award_hooked = okh
+    log:write("AP", okh and ("lobby office: hooked " .. c.award_hook) or ("lobby office: award hook not set: " .. tostring(err)))
+end
+local function om_swap(c)
+    dl.om.swapped = false
+    if not (ap and apcfg.block_vanilla and c.swap_award ~= false and c.office) then return end
+    local ogm = obj_at(c.office)
+    if not ogm then return end
+    local cur = U.to_str(prop(ogm, "ItemAward"))
+    local orig, already = ap:original_name(cur or "")
+    if not already and orig ~= "" and orig ~= "None" and ap.T.locations.collect[orig] then
+        pcall(function() ogm.ItemAward = fname_add(ap:prefix() .. orig) end)
+        cur = U.to_str(prop(ogm, "ItemAward"))
+        log:write("Swap", string.format("lobby office minigame: ItemAward %s -> %s", orig, tostring(cur)))
+    end
+    dl.om.swapped = cur ~= nil and cur:sub(1, #ap:prefix()) == ap:prefix()
+    if dl.om.swapped then om_award_hook(c) end
+end
+local function om_monty(c, h, why)
+    if dl.om.remove_at and world_now_ms() < dl.om.remove_at then return end
+    local monty = prop(h, "SpawnedMonty")
+    if not is_valid(monty) then return end
+    dl.om.removed = dl.om.removed + 1
+    if dl.om.removed <= 5 then log:write("AP", "office Monty taken away from the lobby office door (" .. why .. ")") end
+    local ok, err = pcall(function() h:Remove() end)
+    if not ok then om_say("monty remove", "office Monty: Remove failed, left to the game (" .. tostring(err) .. ")") end
+end
+local function om_door(path, why)
+    local door = obj_at(path)
+    local comp = door and prop(door, "Door")
+    local locked = is_valid(comp) and prop(comp, "bIsLockedForPlayer")
+    om_say("doorstate " .. path, string.format("office scene door %s: %s, door component %s, locked for the player %s", path,
+        door and "found" or "NOT found", is_valid(comp) and "ok" or "missing", tostring(locked)))
+    if locked ~= true then return end
+    om_say("door " .. path, string.format("office scene door %s unlocked: the scene is done (%s), the player can go back",
+        U.short_object_name(path), why))
+    pcall(function() door:SetDoorLockPlayer(false) end)
+    if prop(comp, "bIsLockedForPlayer") == true then pcall(function() comp:SetLockedForPlayer(false) end) end
+end
+local function door_pawns(comp)
+    local req = prop(comp, "NormalDoorEntryRequirements")
+    local arr = req and prop(req, "RestrictedPawns")
+    return arr, U.list_from_array(arr)
+end
+local PAWN_NONE = 0
+local function om_unrestrict(path, why)
+    if dl.om.unrestricted[path] then return end
+    local door = obj_at(path)
+    local comp = door and prop(door, "Door")
+    if not is_valid(comp) then return end
+    dl.om.unrestricted[path] = true
+    local arr, list = door_pawns(comp)
+    if not arr or #list == 0 then return end
+    local open = true
+    for _, v in ipairs(list) do if tonumber(v) ~= PAWN_NONE then open = false end end
+    if open then
+        om_say("pawns open " .. path, string.format("door %s: pawn list { %s }, nothing to change", U.short_object_name(path),
+            table.concat(list, ", ")))
+        return
+    end
+    local ok = pcall(function() arr:ForEach(function(_, e) e:set(PAWN_NONE) end) end)
+    local _, after = door_pawns(comp)
+    local good = ok and #after > 0
+    for _, v in ipairs(after) do if tonumber(v) ~= PAWN_NONE then good = false end end
+    log:write("AP", string.format("door %s: pawn list { %s } -> { %s } (%s), Gregory can open it on foot (%s)%s",
+        U.short_object_name(path), table.concat(list, ", "), table.concat(after, ", "), "the office scene is done", why,
+        good and "" or " FAILED"))
+end
+function dl.locked_doors_tick()
+    if world_now_ms() < dl.om.next_near then return end
+    dl.om.next_near = world_now_ms() + 2000
+    local greg = find("Gregory_C")
+    if not greg then return end
+    local gx, gy, gz = location_of(greg)
+    local range = (apcfg.office_monty or {}).locked_doors_range or 800
+    for _, d in ipairs(dl.find_all("BP_DoorMaster_C")) do
+        local path = is_valid(d) and obj_path(d)
+        local comp = path and not dl.om.near[path] and prop(d, "Door")
+        if is_valid(comp) then
+            local x, y, z = location_of(d)
+            local dist = math.sqrt((x - gx) ^ 2 + (y - gy) ^ 2 + (z - gz) ^ 2)
+            if dist <= range then
+                dl.om.near[path] = true
+                local _, pawns = door_pawns(comp)
+                log:write("AP", string.format("door near the player: %s at %d units (%d,%d,%d), locked for the player %s, for AI %s, pawn list { %s }",
+                    path, math.floor(dist), math.floor(x), math.floor(y), math.floor(z),
+                    tostring(prop(comp, "bIsLockedForPlayer")), tostring(prop(comp, "bIsLockedForAI")), table.concat(pawns, ", ")))
+            end
+        end
+    end
+end
+function dl.office_monty_tick(missions, tasks)
+    local c = apcfg.office_monty or {}
+    if c.enabled == false or not c.handler then return end
+    local om, now = dl.om, world_now_ms()
+    if om.world ~= world.switches then
+        om.world, om.why, om.unrestricted, om.remove_at, om.seen_undone, om.swapped =
+            world.switches, nil, {}, nil, false, false
+        local t = now + (c.settle_ms or 10000)
+        om.due = { doors = t, monty = t, swap = t }
+    end
+    local function due(key)
+        local t = om.due[key]
+        if t and now >= t then om.due[key] = nil; return true end
+        return false
+    end
+    local function flag(n)
+        local ws = find("WorldStateSystem")
+        return ws ~= nil and call(ws, "IsActivated", fname_add(n)) == true
+    end
+    local why = om.why
+    if not why then
+        for _, m in ipairs(c.done_missions or {}) do if (missions or {})[m] then why = why or ("mission " .. m) end end
+        for _, t in ipairs(c.done_tasks or {}) do if (tasks or {})[t] then why = why or ("task " .. t) end end
+        for _, f in ipairs(c.done_flags or {}) do if not why and flag(f) then why = f end end
+    end
+    if why then
+        if not om.why then
+            om.why = why
+            if om.seen_undone then
+                om_set_due("doors", now)
+                om.remove_at = now + (c.grace_ms or 15000)
+                om_set_due("monty", om.remove_at)
+            end
+        end
+        if due("doors") then
+            if c.unlock_doors ~= false then
+                for _, path in ipairs(c.doors or {}) do om_door(path, why) end
+            end
+            if c.unrestrict_doors ~= false then
+                for _, path in ipairs(c.freddy_doors or {}) do om_unrestrict(path, why) end
+            end
+        end
+        if due("monty") then
+            local h = obj_at(c.handler)
+            if h then om_monty(c, h, why) end
+        end
+        return
+    end
+    om.seen_undone, om.remove_at = true, nil
+    if due("swap") then om_swap(c) end
+    if not due("monty") or om.swapped then return end
+    if c.entered_flag and flag(c.entered_flag) then return end
+    local early = nil
+    for _, it in ipairs(c.early_items or {}) do if not early and game.has(it) then early = it end end
+    local h = early and obj_at(c.handler)
+    if h then om_monty(c, h, early .. " owned before entering the office") end
+end
+
 local function hold_triggers_tick(missions)
     if missions == nil then return end
     for cls, h in pairs(apcfg.hold_triggers or {}) do
@@ -4381,38 +5147,76 @@ local function hold_triggers_tick(missions)
 end
 
 dl.locked_actors, dl.seen_actors = {}, {}
+dl.lock = { due = {}, world = nil, spots = {}, done = {}, allowed = {} }
+local function obj_addr(o)
+    local ok, v = pcall(function() return o:GetAddress() end)
+    return ok and v or nil
+end
+function dl.lock_actor_appeared(cls)
+    if (apcfg.lock_actors or {})[cls] then dl.lock.due[cls] = world_now_ms() + (apcfg.lock_settle_ms or 1500) end
+end
+local function lock_actors_scan(cls, h, allow)
+    local L, again = dl.lock, false
+    for _, a in ipairs(FindAllOf(cls) or {}) do
+        local addr = obj_addr(a)
+        if not (addr and L.done[addr]) and is_valid(a) then
+            local key = full_name(a)
+            local short_key = key:match("([^%.:]+)$") or key
+            if not allow then
+                local x, y, z = location_of(a)
+                if not (x == 0 and y == 0 and z == 0) then
+                    if not dl.seen_actors[key] then
+                        dl.seen_actors[key] = true
+                        log:write("AP", string.format("lock_actors: %s (%s) at (%.0f,%.0f,%.0f)", short_key, cls,
+                            tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0))
+                    end
+                    L.spots[cls] = L.spots[cls] or {}
+                    L.spots[cls][key] = { x = x, y = y, z = z }
+                end
+                if call(a, "GetActorEnableCollision") ~= false then
+                    call(a, "SetActorEnableCollision", false)
+                    if not dl.locked_actors[key] then
+                        log:write("AP", string.format("%s closed (collision off) until mission %s is done",
+                            short_key, h.until_mission))
+                    end
+                end
+                dl.locked_actors[key] = true
+                if x == 0 and y == 0 and z == 0 then again = true
+                elseif addr then L.done[addr] = true end
+            elseif dl.locked_actors[key] then
+                call(a, "SetActorEnableCollision", true)
+                dl.locked_actors[key] = nil
+                log:write("AP", string.format("%s open again: mission %s done", short_key, h.until_mission))
+            end
+        end
+    end
+    return again
+end
 function dl.lock_actors_tick(missions)
     if missions == nil then return nil end
+    local L, now = dl.lock, world_now_ms()
+    if L.world ~= world.switches then
+        L.world, L.spots, L.done, L.allowed = world.switches, {}, {}, {}
+        for cls in pairs(apcfg.lock_actors or {}) do L.due[cls] = now end
+    end
     local near = nil
     for cls, h in pairs(apcfg.lock_actors or {}) do
         local allow = missions[h.until_mission] == true
-        for _, a in ipairs(FindAllOf(cls) or {}) do
-            if is_valid(a) then
-                local key = full_name(a)
-                local short_key = key:match("([^%.:]+)$") or key
-                local x, y, z = location_of(a)
-                if not dl.seen_actors[key] and not (x == 0 and y == 0 and z == 0) then
-                    dl.seen_actors[key] = true
-                    log:write("AP", string.format("lock_actors: %s (%s) at (%.0f,%.0f,%.0f)", short_key, cls,
-                        tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0))
-                end
-                if not allow then
-                    if call(a, "GetActorEnableCollision") ~= false then
-                        call(a, "SetActorEnableCollision", false)
-                        if not dl.locked_actors[key] then
-                            log:write("AP", string.format("%s closed (collision off) until mission %s is done",
-                                short_key, h.until_mission))
-                        end
-                        dl.locked_actors[key] = true
-                    elseif dl.locked_actors[key] then
-                        local c = lock_near(a, h)
-                        if c then near = near or { list = {} }; near.list[#near.list + 1] = c end
-                    end
-                elseif dl.locked_actors[key] then
-                    call(a, "SetActorEnableCollision", true)
-                    dl.locked_actors[key] = nil
-                    log:write("AP", string.format("%s open again: mission %s done", short_key, h.until_mission))
-                end
+        if allow and not L.allowed[cls] then
+            L.allowed[cls], L.due[cls], L.done = true, now, {}
+            L.spots[cls] = nil
+        end
+        local every = apcfg.lock_rescan_ms or 0
+        if L.due[cls] and now >= L.due[cls] then
+            L.due[cls] = every > 0 and (now + every) or nil
+            if (not allow or next(dl.locked_actors) ~= nil) and lock_actors_scan(cls, h, allow) then
+                L.due[cls] = now + 2000
+            end
+        end
+        if not allow then
+            for _, sp in pairs(L.spots[cls] or {}) do
+                local c = lock_near_at(sp.x, sp.y, sp.z, h)
+                if c then near = near or { list = {} }; near.list[#near.list + 1] = c end
             end
         end
     end
@@ -4447,7 +5251,7 @@ local function arcade_locks_tick(has_client)
     local locks = apcfg.arcade_locks
     if not locks then return nil end
     local near = nil
-    for _, a in ipairs(FindAllOf(locks.class or "BP_MiniGame_Activator_C") or {}) do
+    for _, a in ipairs(dl.find_all(locks.class or "BP_MiniGame_Activator_C")) do
         if is_valid(a) then
             local key = full_name(a)
             local short_key = key:match("([^%.:]+)$") or key
@@ -4504,20 +5308,22 @@ local scan_tick = 0
 local function ap_tick()
     if not ap then return end
     scan_tick = scan_tick + 1
+    dl.scans.budget = 1
     local quiet = pickup_quiet()
     if apcfg.block_vanilla and scan_due and not quiet then
         scan_due = false
-        scan_pickups()
+        dl.timed("pickup scan", scan_pickups)
     end
-    try("daycare flashlight", daycare_flashlight_tick, "scan")
+    dl.timed("daycare flashlight", daycare_flashlight_tick, "scan")
     local has_client = ap:read_to_game()
     try("notify", dl.notify_poll)
     try("scouts", function() ap:read_scouts() end)
+    try("ui hooks", dl.ui_hooks)
     if not popup.hooked and (apcfg.popup or {}).enabled ~= false then
         local hp = (apcfg.popup or {}).hook or "/Game/Blueprints/UI/PlayerHUD.PlayerHUD_C:ShowCollectedItemDisplay"
         local ok = pcall(RegisterHook, hp, function()
             if #popup.pending == 0 then
-                if popup.icon_hidden then on_game_thread("popup icon", dl.popup_icon_back) end
+                on_game_thread("popup inventory", dl.popup_inventory_now)
                 return
             end
             if not popup.done_once then pstep("hook fired") end
@@ -4530,7 +5336,7 @@ local function ap_tick()
     if not dl.hide_hooked and apcfg.prompt_hide_hook ~= false then
         dl.hide_hooked = true
         local hp = "/Game/Blueprints/UI/PlayerHUD.PlayerHUD_C:Hide Informational Message"
-        local ok, err = pcall(RegisterHook, hp, function() dl.prompt_hide_hook() end)
+        local ok, err = pcall(RegisterHook, hp, function() trace_step("hook prompt hide"); dl.prompt_hide_hook() end)
         if ok then log:write("AP", "prompt: hooked " .. hp)
         else
             if not dl.hide_hook_failed then log:write("AP", "prompt: hook not ready yet " .. hp .. ": " .. tostring(err)) end
@@ -4545,15 +5351,17 @@ local function ap_tick()
     game.missions = last_state and last_state.missions
     game.tasks = last_state and last_state.tasks
     game.active = last_state and last_state.active
-    try("voice hooks", voice_hooks_tick, has_client, game.missions)
-    if last_state and last_state.ready then try("hold triggers", hold_triggers_tick, game.missions) end
+    dl.timed("voice hooks", voice_hooks_tick, has_client, game.missions)
+    if last_state and last_state.ready then dl.timed("hold triggers", hold_triggers_tick, game.missions) end
+    if last_state and last_state.ready then dl.timed("office monty", dl.office_monty_tick, game.missions, game.tasks) end
+    if last_state and last_state.ready and (apcfg.office_monty or {}).log_locked_doors then dl.timed("locked doors", dl.locked_doors_tick) end
     if last_state and last_state.ready and not quiet then
-        try("lock pickups", lock_pickups_tick, game.missions)
-        try("arcade locks", function()
+        dl.timed("lock pickups", lock_pickups_tick, game.missions)
+        dl.timed("arcade locks", function()
             local n = arcade_locks_tick(has_client)
             if n and not prompt.near then prompt.near = n end
         end)
-        try("lock actors", function()
+        dl.timed("lock actors", function()
             local n = dl.lock_actors_tick(game.missions)
             if n and prompt.near then
                 local list = { table.unpack(prompt.near.list or { prompt.near }) }
@@ -4573,8 +5381,12 @@ local function ap_tick()
         game.security_level = tonumber(U.to_str(prop(inv, "SecurityLevel")))
         game.gregory = find("Gregory_C") ~= nil
         for _, a in ipairs(ap:plan(game)) do
-            local ok = try("ap " .. a.op, run_action, inv, a)
-            ap:done(a, ok)
+            if a.op == "award" and dl.awards.why and dl.hold_on() then
+                ap:once("held:" .. a.name .. ":" .. dl.awards.why, string.format("AwardItem %s waits: %s", a.name, dl.awards.why))
+            else
+                local ok = try("ap " .. a.op, run_action, inv, a)
+                ap:done(a, ok)
+            end
         end
     end
     if not dl.ending_hooked then try("goal hooks", dl.ending_hooks) end
@@ -4598,6 +5410,9 @@ if ap and apcfg.block_vanilla then
         if world.in_minigame then return end
         local actor = U.unwrap(ctx)
         local cls = class_name(actor)
+        dl.lock_actor_appeared(cls)
+        dl.office_appeared(actor, cls)
+        watch.appeared(cls)
         if skip_class[cls] then return end
         if wanted(cls) then
             try("condition swap at BeginPlay", swap_conditions, actor, "BeginPlay")
@@ -4622,7 +5437,8 @@ if ap and apcfg.block_vanilla then
         .. " -- pickups are swapped by the poll scan only, after their BeginPlay"))
 end
 
-register_all(cfg.native_hooks, false)
+if cfg.native_hooks_enabled then register_all(cfg.native_hooks, false)
+else log:write("AP", "hooks on the game's C++ functions off (native_hooks_enabled = false)") end
 register_all(cfg.bp_hooks, true)
 for _, spec in ipairs(cfg.voice_hooks or {}) do
     spec.is_actor = false
@@ -4636,9 +5452,11 @@ local function on_new_controller(pc)
     local real = full:find(cfg.real_world_map or "MAP_TheWorld", 1, true) ~= nil
     world.switches = world.switches + 1
     world.pause_until = world_now() + (cfg.world_switch_pause_s or 5)
+    world.loaded_at = world_now()
     dlm.widget, dlm.pause, dlm.kind = nil, nil, nil
     dlm.hosts = {}
     dlm.page = nil
+    dlm.page_failed, dlm.list_failed, dlm.tries = nil, nil, {}
     for k in pairs(found_paths) do found_paths[k] = nil end
     for k in pairs(trail) do trail[k] = nil end
     spawned_force("world switch")
@@ -4646,7 +5464,11 @@ local function on_new_controller(pc)
     prompt.near, prompt.shown = nil, false
     local was = world.in_minigame
     world.in_minigame = not real
-    if real then scan_due = true end
+    if not real and full:find(cfg.title_map or "MAP_Title", 1, true) then world.from_title = true end
+    if real and world.from_title then world.from_title, world.fresh_load, world.fresh_tries = false, true, 0 end
+    if real then
+        scan_due = true
+    end
     log:write("World", string.format("new PlayerController %s: %s, mod paused %ds%s", full,
         real and "real world" or "minigame (mod idle until the real world is back)",
         cfg.world_switch_pause_s or 5, (was and real) and ", back from the minigame" or ""))
@@ -4668,11 +5490,12 @@ end)
 LoopAsync(cfg.poll_ms, function()
     on_game_thread("poll", function()
         if world_busy() then return end
-        snapshot("poll")
-        try("trail", trail_tick)
-        try("despawn", despawn_tick)
-        try("voice poll", voice_poll)
+        dl.timed("state read", snapshot, "poll")
+        dl.timed("trail", trail_tick)
+        dl.timed("despawn", despawn_tick)
+        dl.timed("voice poll", voice_poll)
         ap_tick()
+        dl.poll_report()
     end)
     return false
 end)
@@ -4701,12 +5524,18 @@ LoopAsync(cfg.prompt_ms or 150, function()
         end)
     elseif dl.active then
         on_game_thread("death link", function() try("death link follow", dl_follow) end)
+    elseif ap and (dl_cfg().pause_menu or {}).enabled ~= false then
+        on_game_thread("death link menu", function() try("death link menu", dl_menu_tick) end)
     end
     return false
 end)
 
 LoopAsync(cfg.prompt_ms or 150, function()
     if next(effects) ~= nil then on_game_thread("effects", effects_tick) end
+    if not world.in_minigame and dl.hold_on() then
+        on_game_thread("held awards", dl.awards_tick)
+    end
+    if not world.in_minigame and not world_busy() then on_game_thread("instruction cards", dl.cards_tick) end
     return false
 end)
 LoopAsync((apcfg.popup or {}).tick_ms or 33, function()

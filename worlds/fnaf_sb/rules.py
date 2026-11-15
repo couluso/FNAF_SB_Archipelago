@@ -2,9 +2,9 @@ from typing import TYPE_CHECKING, Callable
 
 from BaseClasses import CollectionState
 
-from .data import (AREA_BY_KEY, AREA_STORY_GATE, ATRIUM_BADGE, BADGE, COLLECTIBLE_ITEM_NAMES, DAYCARE_PASS,
-                   FAZ_CAM, GOLDEN_ITEMS, PROGRESSIVE_FLASHLIGHT, Area, Ending, mission_closure,
-                   missions_need_atrium)
+from .data import (AREA_BY_KEY, AREA_STORY_GATE, ATRIUM_BADGE, BADGE, BADGE_FORKS, COLLECTIBLE_ITEM_NAMES,
+                   ATRIUM_ITEMS, DAYCARE_PASS, FAZ_CAM, GOLDEN_ITEMS, PASS_COUNTS, PROGRESSIVE_FLASHLIGHT,
+                   SHUFFLED_ATRIUM_BADGE, Area, Ending, mission_closure, missions_need_atrium)
 
 COLLECTIBLES = tuple(COLLECTIBLE_ITEM_NAMES.values())
 
@@ -37,23 +37,32 @@ def missions_rule(world: "FNaFSBWorld", missions: tuple) -> Callable[[Collection
     areas, items = mission_closure(tuple(missions))
     area_rules = [_area_open_rule(world, key) for key in sorted(areas)]
     items = sorted(items)
-    badge = ATRIUM_BADGE if missions_need_atrium(tuple(missions)) else 0
+    need_atrium = missions_need_atrium(tuple(missions))
+    badge = atrium_badge(world) if need_atrium else 0
 
     def rule(state: CollectionState) -> bool:
         if badge and state.count(BADGE, player) < badge:
+            return False
+        if need_atrium and not state.has_all(ATRIUM_ITEMS, player):
             return False
         return all(state.has(name, player) for name in items) and all(r(state) for r in area_rules)
 
     return rule
 
 
+def atrium_badge(world: "FNaFSBWorld") -> int:
+    """Security Level the Main Atrium needs: 2 with shuffled badges, as Chica's kitchen and El Chip's (where the story goes next) both need level 2 to get back out. 1 with vanilla badges, the holders inside give the rest."""
+    return SHUFFLED_ATRIUM_BADGE if badges_shuffled(world) else ATRIUM_BADGE
+
+
 def atrium_rule(world: "FNaFSBWorld") -> Callable[[CollectionState], bool]:
-    """The Main Atrium (everything past the Main Entrance and the Daycare) needs the Daycare finished ("Escape The Daycare") and Security Badge level 1."""
+    """The Main Atrium (everything past the Main Entrance and the Daycare) needs the Daycare finished ("Escape The Daycare"), its Security Level (atrium_badge) and the Screwdriver for the Lost and Found vent."""
     player = world.player
     daycare = missions_rule(world, ("EscapeDaycare",))
+    need = atrium_badge(world)
 
     def rule(state: CollectionState) -> bool:
-        return state.count(BADGE, player) >= ATRIUM_BADGE and daycare(state)
+        return state.count(BADGE, player) >= need and state.has_all(ATRIUM_ITEMS, player) and daycare(state)
 
     return rule
 
@@ -76,15 +85,17 @@ def location_extra_rule(world: "FNaFSBWorld", needs) -> Callable[[CollectionStat
 def area_access_rule(world: "FNaFSBWorld", area: Area) -> Callable[[CollectionState], bool]:
     """Badge/pass/flashlight rule to ENTER an area from the Atrium hub (without its story gate, see area_entrance_rule)."""
     player = world.player
-    need_badge = max(area.badge - vanilla_badge_shift(world), ATRIUM_BADGE)
-    need_passes = area.passes
+    need_badge = max(area_badge_need(world, area), atrium_badge(world))
+    need_passes = [(name, PASS_COUNTS.get(name, 1)) for name in area.passes]
     need_light = area.dark
 
     def rule(state: CollectionState) -> bool:
         if need_badge and state.count(BADGE, player) < need_badge:
             return False
-        for pass_name in need_passes:
-            if not state.has(pass_name, player):
+        if not state.has_all(ATRIUM_ITEMS, player):
+            return False
+        for pass_name, count in need_passes:
+            if not state.has(pass_name, player, count):
                 return False
         if need_light and not state.has(PROGRESSIVE_FLASHLIGHT, player):
             return False
@@ -93,10 +104,21 @@ def area_access_rule(world: "FNaFSBWorld", area: Area) -> Callable[[CollectionSt
     return rule
 
 
-def vanilla_badge_shift(world: "FNaFSBWorld") -> int:
-    """Each area's badge level (data.AREAS) is the level you have AFTER its badge holder in the normal game (Prize Counter = 2, and its holder gives the 2nd badge)."""
+def badges_shuffled(world: "FNaFSBWorld") -> bool:
     option = getattr(world.options, "randomize_security_badges", None)
-    return 0 if option is None or option.value else 1
+    return option is None or bool(option.value)
+
+
+def area_badge_need(world: "FNaFSBWorld", area: Area) -> int:
+    """Security Level the logic asks for before an area, so the player can also get back out of it.
+    - Shuffled badges (default): the area's full level, and where the story lets the player pick a path (data.BADGE_FORKS) the higher level of the two.
+    - Vanilla badges: one level lower, the holder inside (or the next one on the way) gives the rest, like in the game."""
+    if not badges_shuffled(world):
+        return area.badge - 1
+    for fork in BADGE_FORKS:
+        if area.key in fork:
+            return max(AREA_BY_KEY[key].badge for key in fork)
+    return area.badge
 
 
 def location_requires_rule(world: "FNaFSBWorld", requires: tuple) -> Callable[[CollectionState], bool]:

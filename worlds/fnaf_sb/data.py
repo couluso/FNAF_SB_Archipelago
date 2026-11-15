@@ -192,6 +192,12 @@ AREAS: Tuple[Area, ...] = (
     Area("utility_tunnels", "Utility Tunnels", badge=3, dark=True),
 )
 
+PASS_COUNTS: Dict[str, int] = {PARTY_PASS: 2}
+
+SHUFFLED_ATRIUM_BADGE = 2
+ATRIUM_ITEMS: Tuple[str, ...] = (SCREWDRIVER,)
+BADGE_FORKS: Tuple[Tuple[str, ...], ...] = (("fazerblast", "monty_golf"),)
+
 AREA_BY_KEY: Dict[str, Area] = {a.key: a for a in AREAS}
 AREA_BY_NAME: Dict[str, Area] = {a.name: a for a in AREAS}
 LOCKABLE_AREAS: Tuple[Area, ...] = tuple(a for a in AREAS if not a.always_open)
@@ -326,6 +332,7 @@ FLASHLIGHT_UPGRADE_SPOTS: Tuple[Tuple[str, str, str], ...] = (
     ("flashlight_upgrade_rehearsal", "fazbear_theater", "Rehearsal room, pitch black"),
     ("flashlight_upgrade_golf", "monty_golf", "Back room of the food stand"),
 )
+DAYCARE_JUNK_ONLY_KEYS = frozenset({"daycare.flashlight_upgrade_daycare"})
 FREDDY_UPGRADE_SPOTS: Tuple[Tuple[str, str, str], ...] = (
     ("freddy_upgrade_raceway", "roxy_raceway", "Last race-car garage, shelf behind the door"),
     ("freddy_upgrade_atrium", "atrium", "Next to the salad shop, on a table"),
@@ -419,8 +426,10 @@ MISSIONS: Tuple[MissionDef, ...] = (
     MissionDef("KitchenOffice", "Kitchen Office", "loading_dock", deps=("EscapeDaycare",)),
     MissionDef("LoadingDock", "Loading Dock", "loading_dock", deps=("EscapeDaycare",)),
     MissionDef("PrizeCounter", "Prize Counter", "prize_counter", deps=("EscapeDaycare",)),
-    MissionDef("FindFreddy", "Find Freddy", "prize_counter", deps=("PrizeCounter",)),
-    MissionDef("LostAndFound", "Lost And Found", "loading_dock", deps=("FindFreddy", "LoadingDock")),
+    MissionDef("FindFreddy", "Find Freddy", "prize_counter", requires=(SCREWDRIVER,),
+               deps=("PrizeCounter",)),
+    MissionDef("LostAndFound", "Lost And Found", "loading_dock", requires=(SCREWDRIVER,),
+               deps=("FindFreddy", "LoadingDock")),
     MissionDef("RehearsalSpace", "Rehearsal Space", "rockstar_row", deps=("LostAndFound",)),
     MissionDef("Backstage", "Backstage", "backstage", requires=(BACKSTAGE_PASS,),
                deps=("RehearsalSpace",)),
@@ -450,7 +459,7 @@ MISSIONS: Tuple[MissionDef, ...] = (
                requires=(DANCE_PASS,), deps=("RoxysWeakness",)),
     MissionDef("StopRoxy", "Stop Roxy", "roxy_raceway", deps=("DJMusicMan",)),
     MissionDef("UpgradeFreddy", "Upgrade Freddy", "parts_service", ("roxy_raceway",),
-               deps=("StopRoxy",)),
+               requires=(EYES,), deps=("StopRoxy",)),
 )
 MISSION_BY_INTERNAL: Dict[str, MissionDef] = {m.internal: m for m in MISSIONS}
 
@@ -469,19 +478,23 @@ FREDDY_INSTALL_EVENTS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
     ("upgrade_freddy_claws", "parts_service", "Upgrade Freddy with Monty's Claws", (CLAWS,)),
     ("upgrade_freddy_beak", "parts_service", "Upgrade Freddy with Chica's Voice Box", (BEAK,)),
 )
+LOBBY_OFFICE_CAMERAS: Tuple[str, str, str] = (
+    "lobby_office_cameras", "atrium", "Press the camera button in the lobby security office (Get Out)",
+)
 
 LOCATION_MISSION_GATE: Dict[str, str] = {
-    "atrium.party_pass_b": "MoonlightSerenade",
+    "atrium.party_pass_b": "UpgradeFreddy",
     "rockstar_row.party_pass_a": "PartsAndService",
     "parts_service.upgrade_freddy_claws": "MoonlightSerenade",
     "parts_service.upgrade_freddy_beak": "MoonlightSerenade",
     "monty_golf.defeat_monty": "ThrillSeeker",
     "fazbear_theater.defeat_chica": "DumpsterDiving",
-    "parts_service.repair_roxy": "UpgradeFreddy",
+    "parts_service.repair_roxy": "StopRoxy",
     "fazerblast.win_fazerblaster": "FazerBlast",
     "fazerblast.princess_quest_3": "FazerBlast",
     "daycare.complete_area": "EscapeDaycare",
     "loading_dock.escape_chica_chase": "LoadingDock",
+    "loading_dock.screwdriver": "LoadingDock",
     **{f"{area}.{key}": mission for key, area, _, _, mission in BADGE_HOLDERS + (BADGE_HOLDER_DAYCARE,)},
 }
 
@@ -500,6 +513,7 @@ ENTRANCE_LOCATION_KEYS = frozenset({
     "atrium.bag_ac_inspection",
     "atrium.mission_free_freddy",
     "atrium.mission_get_out",
+    "atrium.lobby_office_cameras",
     "atrium.hour_0",
 })
 DAYCARE_MISSIONS = frozenset({"NoReEntry", "SlideIntoFun", "LetThereBeLight", "EscapeDaycare"})
@@ -509,6 +523,10 @@ LOCATION_EXTRA_NEEDS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[st
     "atrium.chica_plush": ((), (ENTRY_PASS,), ()),
     "atrium.bag_ac_inspection": ((), (ENTRY_PASS,), ()),
     "atrium.pinata": ((), (ENTRY_PASS,), ()),
+    "atrium.bag_hi_dave": ((), (ENTRY_PASS,), ()),
+    "atrium.bag_easy_money": ((), (ENTRY_PASS,), ()),
+    "atrium.mr_hippo_magnet": ((), (ENTRY_PASS,), ()),
+    "atrium.cupcake_pinata": ((), (ENTRY_PASS,), ()),
     "atrium.freddy_upgrade_atrium": (("LoadingDock",), (), ()),
     "atrium.roxy_mask": (("Showtime",), (), ("roxy_raceway",)),
     "atrium.frozen_roxy_treat": (("Showtime",), (), ("roxy_raceway",)),
@@ -523,8 +541,8 @@ HOURS: Tuple[Tuple[int, str, Tuple[str, ...]], ...] = (
     (2, "2 AM", ("Showtime",)),
     (3, "3 AM", ("PartsAndService",)),
     (4, "4 AM", ("MoonlightSerenade",)),
-    (5, "5 AM", ("MoonlightSerenade",)),
-    (6, "6 AM", ("MoonlightSerenade",)),
+    (5, "5 AM", ("UpgradeFreddy",)),
+    (6, "6 AM", ("UpgradeFreddy",)),
 )
 SIX_AM_MISSIONS: Tuple[str, ...] = HOURS[-1][2]
 
@@ -651,6 +669,10 @@ def _build_raw_locations() -> List[LocationDef]:
         out.append(LocationDef(f"{area}.{key}", f"{AREA_BY_KEY[area].name}: {hint}",
                                area, "ability", next_id, requires, hint))
         next_id += 1
+    key, area, hint = LOBBY_OFFICE_CAMERAS
+    out.append(LocationDef(f"{area}.{key}", f"{AREA_BY_KEY[area].name}: {hint}",
+                           area, "story", next_id, (), hint))
+    next_id += 1
     return out
 
 

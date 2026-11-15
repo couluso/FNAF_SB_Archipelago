@@ -44,6 +44,50 @@ C.ap = {
     },
     regive_delay = { Flashlight = 25 },   -- seconds before giving back an item the game took
     hold_until_pickup = {},
+    -- Lobby security office (intro): Monty does his vanilla chase and door banging the first time.
+    -- Once that scene is done (done_flags / done_tasks / done_missions), he never comes back to bang on the door.
+    -- Also taken away before the player entered the office the first time if an early_items item is owned
+    -- (Pizzaplex Cameras received early: the game put him at the door before the player could get in).
+    office_monty = {
+        enabled = true,
+        handler = "/Game/Maps/Utility/MAP_UtiliDoorsGameplay.MAP_UtiliDoorsGameplay:PersistentLevel.MontyUtilidoorOffice_2",
+        entered_flag = "EnteredLobbyOffice",
+        done_flags = { "LobbyOfficeFinished" },
+        done_tasks = { "GetOut#3" },
+        done_missions = { "GetOut" },
+        early_items = { "CamerasOffice_Intro" },
+        grace_ms = 15000,   -- scene finished while playing: time for him to walk away by himself first
+        -- The office minigame's ItemAward (CamerasOffice_Intro) swapped to APX_CamerasOffice_Intro like a pickup:
+        -- the game reads HasItem(ItemAward) there (the button refused while the AP cameras were owned).
+        -- The button then sends its own location (atrium.lobby_office_cameras) through award_hook.
+        swap_award = true, awards = { CamerasOffice_Intro = true },
+        office = "/Game/Maps/Utility/MAP_UtiliDoorsGameplay.MAP_UtiliDoorsGameplay:PersistentLevel.OGM_Utilidoors_2",
+        award_hook = "/Game/Blueprints/SecurityOffice/BP_MiniGameManger.BP_MiniGameManger_C:AwardItemToPlayer",
+        -- The scene leaves its doors locked for the player: the office's right door (ExitDoor, back to the
+        -- utility tunnels) stayed shut after Get Out. Unlocked once the scene is done (again if the game relocks them).
+        unlock_doors = true,
+        doors = {
+            "/Game/Maps/Utility/MAP_UtiliDoorsGameplay.MAP_UtiliDoorsGameplay:PersistentLevel.OfficeDoorRight",
+            "/Game/Maps/Utility/MAP_UtiliDoorsGameplay.MAP_UtiliDoorsGameplay:PersistentLevel.OfficeDoorLeft",
+            "/Game/Maps/World/MAP_Doors.MAP_Doors:PersistentLevel.BP_DoorMaster33",   -- LobbyDoor
+        },
+        -- Doors only Freddy opens (their RestrictedPawns list, { 2 } there, { 0 } on the ordinary doors), on the way
+        -- back to Rockstar Row: set to { 0 } once the scene is done, so Gregory can walk back on foot.
+        unrestrict_doors = true,
+        freddy_doors = {
+            "/Game/Maps/World/MAP_Doors.MAP_Doors:PersistentLevel.BP_DoorMaster18",
+        },
+        -- The office's objects are never polled (looked up every poll, the game crashed as their sublevel unloaded):
+        -- touched when the game starts one of these classes (BeginPlay), appear_ms after (settle_ms for a door),
+        -- once settle_ms after each load, and when the scene gets done.
+        watch = { swap = { "OGM_Utilidoors_C" }, monty = { "MontyUtilidoorOffice_C", "Monty_C" },
+                  doors = { "BP_DoorMaster_C" } },
+        appear_ms = 1000,
+        settle_ms = 10000,
+        -- Diagnostic: logs every door near the player (within locked_doors_range) once, with its lock state.
+        -- Off: it searched every door of the game each poll (lag). The doors are found.
+        log_locked_doors = false, locked_doors_range = 800,
+    },
     condition_swaps = { FazPassUpgradeMachine_C = { HasUpgradedFazPass = "DaycarePass" } },
     voice_lines = {
         { event = "VANESSA_00002", match = { "VANESSA_00002", "supposed to be on lockdown" },
@@ -51,6 +95,11 @@ C.ap = {
     },
     block_story_pickups = { PartyPassChicaRoom = true },
     hold_triggers = {},
+
+    -- The searches through every object of the game (the closed elevators, pickups and arcade machines below)
+    -- cost ~20 ms each: each class searched again every scan_refresh_ms, one per poll, its actors found again by
+    -- their path in between. 0: every poll like before (lag).
+    scan_refresh_ms = 10000,
 
     -- Things kept closed until a mission is done, with the message shown when you look at them.
     lock_pickups = {
@@ -67,6 +116,10 @@ C.ap = {
                     before_message = "Beat Princess Quest II before." },
         },
     },
+    -- The actors below are closed when they appear (BeginPlay, then lock_settle_ms) and after each load, then left
+    -- alone: read every poll, the game crashed as the lobby unloaded walking back to the office.
+    -- lock_rescan_ms > 0: looked at again that often anyway (0: never).
+    lock_settle_ms = 1500, lock_rescan_ms = 0,
     lock_actors = {
         ElevatorButton_C = { until_mission = "EscapeDaycare", message = "Requires Completing Daycare",
             radius = 600, look = 250, z_offset = 0 },
@@ -128,14 +181,14 @@ C.ap = {
         -- The texts can be edited freely ("\n" = new line).
         pause_menu = { enabled = true, style = "page", after = "MessagesButton", title = "DEATH LINK",
                        page = { after = "InventoryButton", button = "Archipelago Options", title = "ARCHIPELAGO OPTIONS",
-                                row = "Death Link killer", back = "Back",
+                                row = "Deathlink Behavior", back = "Back",
                                 desc_title = "Death Link Behavior",
                                 short = "Who comes for you when another player dies.",
                                 descriptions = {
                                     Chica = "Chica jumpscares you.",
                                     Roxy = "Roxy jumpscares you.",
                                     Monty = "Monty jumpscares you.",
-                                    Vanessa = "Vanessa catches you. (must have completed at least one mission)",
+                                    Vanessa = "Vanessa catches you.",
                                     Vanny = "Vanny jumpscares you.",
                                     Moon = "Moon catches you, only when he is free to roam around the building.",
                                     Endos = "An Endo catches you.",
@@ -153,7 +206,22 @@ C.ap = {
                                 desc_long_size = 22, desc_short_size = 42,
                                 button_font_size = 30,
                                 margin = { left = 130, top = 73, right = 0, bottom = 150 },
-                                rows_top = 145, row_right = 80, back_top = 40 },
+                                rows_top = 145, row_right = 80, back_top = 40,
+                                -- "overlay": the page is shown over the pause page, the game's own page switcher is never touched
+                                -- ("switcher" = the old way, which could open the inventory instead). Built construct_delay_ms after the pause menu
+                                -- (0 = right when the game makes it, no delay).
+                                host = "overlay", construct_delay_ms = 0,
+                                -- Second row: tooltips (instruction cards), a checkbox (the game's own, cards_style = "combo": a < On / Off > row).
+                                -- Checked = none ever shows (ap.instruction_cards), unchecked = vanilla.
+                                -- Checked again every time the game starts (instruction_cards.none = false in config.lua: unchecked).
+                                cards_row = "Disable Tooltips", cards_style = "check", cards_on = "On", cards_off = "Off", row_gap = 0,
+                                cards_short = "Hides the game's instruction cards.",
+                                cards_on_desc = "Checked: no instruction card (tooltip) ever shows.",
+                                cards_off_desc = "Unchecked: instruction cards (tooltips) show like in the vanilla game.",
+                                cards_end = "Checked by default, checked again every time the game starts.",
+                                -- Shown when Death Link is off for the slot (death_link in the YAML).
+                                off_label = "Off for this slot",
+                                off_desc = "Death Link is off for this slot (death_link in your YAML)." },
                        place = "top_right", h_align = 3, v_align = 1,
                        in_options = false, options_box = "OptionsVerticalBox", options_after = "GeneralOptionButton",
                        padding = { left = 0, top = 190, right = 120, bottom = 0 },
@@ -208,6 +276,7 @@ C.ap = {
         caffeine = { seconds = 90, speed_mult = 1.15 },
         recharge = { seconds = 50 },
         stun = { seconds = 5, beep_ms = 900, keys = { "W", "A", "S", "D" },
+                 key_poll = false,   -- true: also IsInputKeyDown on the keys (builds an FKey every tick, crash risk)
                  sound = { name = "Play_sfx_freddy_call_unsuccesful", paths = {
                      "/Game/Audio/Assets/Character/Greg/Fazwatch/UI/Play_sfx_freddy_call_unsuccesful.Play_sfx_freddy_call_unsuccesful" } } },
         reverse = { seconds = 15 },
@@ -237,7 +306,14 @@ C.ap = {
               load_icons = false, trace = false, hook_delay_ms = 10, tick_ms = 33, fresh_s = 0.4,
               icon_files = { progression = "icons/progression.png", useful = "icons/useful.png",
                              filler = "icons/filler.png", trap = "icons/trap.png" },
-              unknown_text = "Archipelago item", window_s = 8 },
+              unknown_text = "Archipelago item", window_s = 8,
+              all_checks = true },   -- bags, badge holders, Faz-Watch and Photo Pass too (false: presents only)
+    -- no instruction card at all (none: every card type marked as seen at each load, floor triggers off);
+    -- hold: an item can still open one, which only Gregory can close (stuck game inside Freddy, in a
+    -- loading screen or a cinematic): AwardItem waits until Gregory has had control for settle_ms
+    instruction_cards = { hold = true, settle_ms = 3000, after_load_s = 15, loading_max_s = 60,
+                          player_pawn = "Gregory_C",
+                          none = true, types = 48, trigger_scan_ms = 10000 },  -- no card at all: every type marked as seen
     received_notify = { enabled = true, icon_file = "icons/proguseful.png", load_icons = false,
                font = "/Game/Fonts/Oxanium_Font.Oxanium_Font", typeface = "Default", font_size = 26,
                icon_size = 64, gap = 14, margin_x = 40, margin_y = 40, shadow = 0.75,
@@ -258,11 +334,22 @@ C.hook_retry_max = 720
 
 -- Log file: <this mod>/log.txt, rewritten at each launch.
 C.max_log_lines = 5000
+C.keep_previous_log = true    -- the session before stays in log_previous.txt (a crash ends it)
+C.crash_trace = true          -- trace.txt: each task the mod starts, written at once (its last line = what ran at a crash)
+C.crash_trace_lines = 20000   -- the file starts again past this
+C.hook_settle = true          -- a hook waits one retry after its function appears (streamed in): hooked at once it crashed
 C.log_console = false       -- true: every log line also goes to the UE4SS console
 C.log_verbose = false       -- true: more details in the log (for bug reports)
 C.log_state_details = false
 C.read_world_flags = false
 
+C.log_flush_every = 1      -- lines between two writes to disk (1: every line, so a crash loses nothing)
+C.slow_poll_ms = 40         -- a game-state read longer than this is logged with the time of each step (0: never)
+
+-- Hooks on the game's C++ functions: UE4SS 3.0.1 reads their parameters from broken memory here
+-- ("push_nameproperty data pointer is nullptr" in UE4SS.log on CompleteMission), which can crash the
+-- game where no Lua code can catch it. Off: the state read every poll_ms finds the same changes.
+C.native_hooks_enabled = false
 C.native_hooks = {
     { path = "/Script/fnaf9.FNAFInventorySystem:AwardItem", snapshot = true },
     { path = "/Script/fnaf9.FNAFInventorySystem:RemoveItem", snapshot = true },
@@ -315,6 +402,11 @@ C.arcade_games = { "PrincessQuestOne", "PrincessQuestTwo", "PrincessQuestThree" 
 C.arcade_fields = { "Played", "Glitched" }
 C.game_instance_flags = { "PrincessQuest1Completed", "PrincessQuest2Completed" }
 C.watch_actor_props = { FazPassUpgradeMachine_C = { "ComplimentaryPassDone?", "MagnetDone?" } }
+-- read only while Gregory is within watch_radius of them (looked up every poll, the game crashed as they unloaded);
+-- found again watch_appear_ms after their BeginPlay and watch_settle_ms after each load
+C.watch_radius = 2500
+C.watch_appear_ms = 1000
+C.watch_settle_ms = 10000
 C.gregory_props = { "HasFlashlight", "FlashlightInventoryName" }
 
 return C

@@ -113,6 +113,7 @@ function U.new_logger(opts)
         echo = opts.echo,
         console = opts.console,
         verbose = opts.verbose,
+        flush_every = opts.flush_every or 1,
         prefix = opts.prefix or "",
         clock = opts.clock or function() return os.date("%H:%M:%S") end,
         lines = 0,
@@ -135,7 +136,8 @@ function Logger:write(tag, msg)
         line = string.format("[%s] [Log] %d lines reached, log stopped for this session", self.clock(), self.max_lines)
     end
     self.file:write(line, "\n")
-    if self.verbose or self.capped or tag == "Error" or self.lines % 50 == 0 then self.file:flush() end
+    -- written to disk at once by default: when the game crashes, the last lines are the ones that matter
+    if self.verbose or self.capped or tag == "Error" or self.lines % self.flush_every == 0 then self.file:flush() end
 end
 
 function U.write_file(path, text)

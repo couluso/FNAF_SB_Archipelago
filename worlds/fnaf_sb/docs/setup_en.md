@@ -95,5 +95,7 @@ until you restart it.
 - An item is missing in game: type `/resync` in the client.
 - No Foxy sound: close the game, restart the client, then start the game again.
 
-When you report a bug, send `Mods/FNaF_SB_Ap/log.txt` and the client's log. For a more detailed log, set
-`C.log_verbose = true` in `Mods/FNaF_SB_Ap/Scripts/config.lua`, restart the game and do it again.
+When you report a bug, send `Mods/FNaF_SB_Ap/log.txt` and the client's log. If the game crashed and you already
+started it again, the session that crashed is in `log_previous.txt` instead, and `trace_previous.txt` next to it shows
+what the mod was doing right when it went down. Send those two. For a more detailed log, set `C.log_verbose = true` in
+`Mods/FNaF_SB_Ap/Scripts/config.lua`, restart the game and do it again.

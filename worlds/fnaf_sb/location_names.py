@@ -107,6 +107,7 @@ LOCATION_NAMES: Dict[str, str] = {
     "parts_service.repair_roxy": "Defeat Glamrock Roxy (Roxy's Eyes)",
     "parts_service.upgrade_freddy_claws": "Parts & Service: Upgrade Freddy with Monty's Claws",
     "parts_service.upgrade_freddy_beak": "Parts & Service: Upgrade Freddy with Chica's Voice Box",
+    "atrium.lobby_office_cameras": "Main Entrance: camera button in the lobby security office",
     "beauty_salon.princess_quest_1": "Arcade: Beat Princess Quest, Act 1",
     "fazcade.princess_quest_2": "Arcade: Beat Princess Quest, Act 2",
     "fazerblast.princess_quest_3": "Vanny's Hidden Room: Beat Princess Quest, Act 3",
