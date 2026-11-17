@@ -6,8 +6,13 @@ C.ap = {
     bridge_dir = nil,         -- nil = <this mod>/bridge, must match mod_bridge_folder in host.yaml
     inject = true,            -- give the items received from Archipelago
     notify = true,            -- show the game's "item received" popup
-    ready_polls = 3,
+    -- state reads with Gregory there before items are given
+    ready_polls = 2,
     max_awards_per_tick = 3,
+    -- Nothing from Archipelago is given this long after an actor started (an area streaming in), at most
+    -- award_quiet_max_ms in a row.
+    award_quiet_ms = 2000,
+    award_quiet_max_ms = 30000,
     max_award_attempts = 3,
     set_security_level = true,
     battery_drain_fraction = 0.5,   -- share of the battery drained by a Battery Trap
@@ -89,11 +94,17 @@ C.ap = {
         -- ...and only while Gregory is this close to where the object was when it started (its sublevel loaded):
         -- the game crashed doing it far away, after the reload of a Death Link death.
         near_radius = 2500,
+        -- ...each one the object its BeginPlay handed over, and nothing touched for stream_quiet_ms after any
+        -- actor started (an area streaming in)
+        stream_quiet_ms = 2000,
         -- Diagnostic: logs every door near the player (within locked_doors_range) once, with its lock state.
         -- Off: it searched every door of the game each poll (lag). The doors are found.
         log_locked_doors = false, locked_doors_range = 800,
     },
     condition_swaps = { FazPassUpgradeMachine_C = { HasUpgradedFazPass = "DaycarePass" } },
+    -- Nothing from Archipelago is given during a boss fight, until hold_ms after its last projectile started
+    -- (the Monty fight's ball cannon fires one every ~0.5 s).
+    boss_fights = { enabled = true, hold_ms = 30000, classes = { ShootingBallMontyBoss_C = "Monty" } },
     -- The items of the beaten animatronics. While the pile (classes below) or the item's pickup is loaded and the
     -- item not taken there, it stays out of the inventory, so the boss and its pile play like the first time.
     -- Taking it sends its check, it stays while that area is loaded, then it is taken back if not received yet.
@@ -109,11 +120,15 @@ C.ap = {
     -- cost ~20 ms each: each class searched again every scan_refresh_ms, one per poll, its actors found again by
     -- their path in between. 0: every poll like before (lag).
     scan_refresh_ms = 10000,
+    -- The HUD showing these messages is kept, looked for again at most this often once gone.
+    prompt_hud_retry_ms = 1000,
 
     -- Things kept closed until a mission is done, with the message shown when you look at them.
     lock_pickups = {
-        ChicaGreenroomCollectible_C = { until_mission = "PartsAndService", why = "it starts the 4 AM blackout",
-            message = "Complete Freddy's maintenance first", radius = 600, look = 350, z_offset = 30 },
+        -- also opens with the mission's task "Complete Freddy's Maintenance"
+        ChicaGreenroomCollectible_C = { until_mission = "PartsAndService", until_task = "PartsAndService#1",
+            why = "it starts the 4 AM blackout",
+            message = "Complete Freddy's Maintenance in Parts and Service first", radius = 600, look = 350, z_offset = 30 },
     },
     arcade_locks = {
         class = "BP_MiniGame_Activator_C", sphere_margin = 170, radius = 600, look = 200, z_offset = 60,
@@ -129,12 +144,16 @@ C.ap = {
     -- alone: read every poll, the game crashed as the lobby unloaded walking back to the office.
     -- lock_rescan_ms > 0: looked at again that often anyway (0: never).
     lock_settle_ms = 1500, lock_rescan_ms = 0,
+    -- Only the buttons of the two Main Entrance elevators (levels: the maps they are in).
     lock_actors = {
         ElevatorButton_C = { until_mission = "EscapeDaycare", message = "Requires Completing Daycare",
+            levels = { "MAP_ElevatorMainLobbyPrize", "MAP_LobbyAtriumElevator" },
             radius = 600, look = 250, z_offset = 0 },
         ElevatorButton_V2_C = { until_mission = "EscapeDaycare", message = "Requires Completing Daycare",
+            levels = { "MAP_ElevatorMainLobbyPrize", "MAP_LobbyAtriumElevator" },
             radius = 600, look = 250, z_offset = 0 },
         ElevatorButton_V2_PartsService_C = { until_mission = "EscapeDaycare", message = "Requires Completing Daycare",
+            levels = { "MAP_ElevatorMainLobbyPrize", "MAP_LobbyAtriumElevator" },
             radius = 600, look = 250, z_offset = 0 },
     },
 
@@ -170,7 +189,10 @@ C.ap = {
                           auto_alert = false, real_catch = true, check_ms = 1500, bot_gone_ms = 6000, answer = false,
                           bot_type = 9, catch_dist = 150, alert_after_ms = 1500, gone_after_ms = 500,
                           bot_classes = {}, bot_dist = 250, bot_show_ms = 3000,
-                          kill_after_ms = 2500, killers = { "chica", "roxy", "monty", "endos" } },
+                          kill_after_ms = 2500, killers = { "chica", "roxy", "monty", "endos" },
+                          -- no staff bot while Gregory is crouched (capsule half height under this; 38 in a
+                          -- vent, 60 standing): the alarm and an animatronic instead
+                          min_greg_half = 50 },
             vanny = { name = "Vanny", spawn_class = "/Game/Blueprints/AI/Vanny/Vanny.Vanny_C", untested = true,
                       dist = 100, z_offset = 0, load_wait_ms = 2000, life_ms = 20000, catch_delay_ms = 0,
                       methods = { "Jumpscare", "ForceJumpscarePlayer", "LethalJumpscareBPI" } },
@@ -325,6 +347,9 @@ C.ap = {
               icon_files = { progression = "icons/progression.png", useful = "icons/useful.png",
                              filler = "icons/filler.png", trap = "icons/trap.png" },
               unknown_text = "Archipelago item", window_s = 8,
+              -- the HUD is looked up again at most every hud_retry_ms; the icon stops following the text
+              -- icon_fade_max_ms after the popup (a popup fades in 4 s)
+              hud_retry_ms = 1000, icon_fade_max_ms = 4500,
               all_checks = true },   -- bags, badge holders, Faz-Watch and Photo Pass too (false: presents only)
     -- no instruction card at all (none: every card type marked as seen at each load, floor triggers off);
     -- hold: an item can still open one, which only Gregory can close (stuck game inside Freddy, in a
@@ -343,6 +368,24 @@ C.ap = {
                 menus = { TitleUI_C = { class = "/Game/Blueprints/UI/TitleUI.TitleUI_C" } },
                 font = "/Game/Fonts/Oxanium_Font.Oxanium_Font", typeface = "Default", font_size = 22, shadow = 0.75,
                 margin_x = 40, margin_y = 40, z_order = 950, tick_ms = 1000 },
+    -- The loading screen tip: one drawn at random for each loading screen, weight = how often.
+    loading_tip = { enabled = true, text = "ALWAYS create a new save slot",
+                    texts = {
+                        { "ALWAYS create a new save slot in case you get stuck", weight = 3 },
+                        { "Icons may not show due to the game being slow itself", weight = 1 },
+                        { "Deathlink is still janky be careful", weight = 1 },
+                        { "Never trust Universal Tracker", weight = 1 },
+                        { "Shout out to @pinkcrackshot for the custom icons", weight = 1 },
+                        { "You're loading back because you crashed ? Or because someone else died ?", weight = 1 },
+                        { "Where is that screwdriver ?", weight = 1 },
+                        { "Where is my backstage pass ?", weight = 1 },
+                        { "Be aware of TVA Moonman", weight = 1 },
+                        { "Try to not break sequencing", weight = 3 },
+                        { "Try to not glitch too much", weight = 3 },
+                    },
+                    classes = { "/Game/Blueprints/UI/Loading/LoadingGraphic.LoadingGraphic_C" },
+                    widget = "GameTipsText", update_fn = "UpdateTip", tick_ms = 1000,
+                    load = true },        -- the widget's class loaded by the mod (else hooked too late, at the first load)
     show_messages = true,
     look_cos = 0.93,
     -- The Monty Golf Faz-Camera also counts when the game hands it out or marks its task done.
@@ -363,6 +406,12 @@ C.prompt_ms = 200
 C.after_pickup_quiet_s = 5
 C.hook_retry_ms = 5000
 C.hook_retry_max = 720
+-- A hook waits for an actor of its class to start (BeginPlay); one of these child classes starting counts for its
+-- parent (only the Kitchen badge holder is a PRE_BadgeHolder_C, the others are child classes)
+C.hook_class_children = {
+    PRE_BadgeHolder_C = { "PRE_BadgeHolder_Daycare_C", "PRE_BadgeHolder_WestArcade_C", "PRE_BadgeHolder_PrizeCounter_C",
+                          "Pre_BadgeHolder_Backstage_C" },
+}
 
 -- Log file: <this mod>/log.txt, rewritten at each launch.
 C.max_log_lines = 5000
@@ -418,6 +467,15 @@ C.bp_hooks = {
     { path = COL .. "ChicaGreenroomCollectible.ChicaGreenroomCollectible_C:OnCollect", snapshot = true, check = "collect" },
     { path = PRE .. "PRE_BadgeHolder.PRE_BadgeHolder_C:Collect_SecurityBadge", snapshot = true },
     { path = PRE .. "PRE_BadgeHolder.PRE_BadgeHolder_C:Anim Sequence Finished", snapshot = true },
+    -- The Warehouse badge holder is its own class (not a PRE_BadgeHolder_C), and the Prize Counter and Daycare
+    -- ones have their own Collect_SecurityBadge: hooked too (both hooks firing still give one popup).
+    { path = "/Game/Blueprints/Warehouse/PRE_BadgeHolder_Warehouse.PRE_BadgeHolder_Warehouse_C:Collect_SecurityBadge", snapshot = true },
+    { path = "/Game/Blueprints/Warehouse/PRE_BadgeHolder_Warehouse.PRE_BadgeHolder_Warehouse_C:Anim Sequence Finished", snapshot = true },
+    { path = "/Game/Blueprints/SecurityOffice/PrizeCounter/PRE_BadgeHolder_PrizeCounter.PRE_BadgeHolder_PrizeCounter_C:Collect_SecurityBadge", snapshot = true },
+    { path = PRE .. "PRE_BadgeHolder_Daycare.PRE_BadgeHolder_Daycare_C:Collect_SecurityBadge", snapshot = true },
+    -- The Faz-Pass machine is read after it is used, on the object the hook hands over.
+    { path = "/Game/Blueprints/Objects/Actors/FazPassUpgradeMachine.FazPassUpgradeMachine_C:OnPlayerInteract", watch = true,
+      snapshot = true },
 }
 
 local SUB = "/Game/Blueprints/UI/Subtitles/"
@@ -440,11 +498,17 @@ C.arcade_games = { "PrincessQuestOne", "PrincessQuestTwo", "PrincessQuestThree" 
 C.arcade_fields = { "Played", "Glitched" }
 C.game_instance_flags = { "PrincessQuest1Completed", "PrincessQuest2Completed" }
 C.watch_actor_props = { FazPassUpgradeMachine_C = { "ComplimentaryPassDone?", "MagnetDone?" } }
--- read only while Gregory is within watch_radius of them (looked up every poll, the game crashed as they unloaded);
--- found again watch_appear_ms after their BeginPlay and watch_settle_ms after each load
+-- read once watch_appear_ms after their BeginPlay and watch_settle_ms after each load, then only for watch_interact_ms
+-- after the player uses them (their OnPlayerInteract hook) while Gregory is within watch_radius; never looked up by
+-- path (every poll, the game crashed as the Main Entrance streamed out)
 C.watch_radius = 2500
 C.watch_appear_ms = 1000
 C.watch_settle_ms = 10000
+-- Read on the object its BeginPlay gave, only watch_quiet_ms after the last actor started (an area streaming in), at
+-- most watch_tries times; never once its fields' Archipelago locations are checked.
+C.watch_quiet_ms = 2000
+C.watch_tries = 3
+C.watch_interact_ms = 60000
 C.gregory_props = { "HasFlashlight", "FlashlightInventoryName" }
 
 return C

@@ -6,7 +6,7 @@ local APC = require("ap_core")
 local ok_tables, APT = pcall(require, "ap_tables")
 
 local MOD = "FNaF_SB_Ap"
-local VERSION = "1.0.0-beta.3"
+local VERSION = "1.0.0-beta.4"
 
 -- paths & log
 local src = debug.getinfo(1, "S").source:gsub("^@", "")
@@ -222,41 +222,95 @@ end
 -- state snapshot
 local clock_seen_negative = false
 
-local watch = { world = nil, at = {}, due = nil }
-function watch.appeared(cls)
-    if (cfg.watch_actor_props or {})[cls] then watch.due = world_now_ms() + (cfg.watch_appear_ms or 1000) end
+local watch = { world = nil, due = nil, vals = {}, obj = {}, read_until = {}, seen = {}, tries = 0 }
+function watch.appeared(cls, actor)
+    if not (cfg.watch_actor_props or {})[cls] then return end
+    watch.due, watch.tries = world_now_ms() + (cfg.watch_appear_ms or 1000), 0
+    if actor ~= nil then
+        watch.seen[cls] = watch.seen[cls] or {}
+        table.insert(watch.seen[cls], actor)
+    end
+end
+function watch.from_ap(cls)
+    if not (ap and ap.T and ap.T.locations and ap.T.locations.actor) then return end
+    local v = watch.vals[cls] or {}
+    watch.vals[cls] = v
+    for _, p in ipairs((cfg.watch_actor_props or {})[cls] or {}) do
+        local loc = ap.T.locations.actor[cls .. "." .. p]
+        if loc and ap.checks and ap.checks[loc] then v[p] = true end
+    end
+end
+function watch.all_true(cls)
+    watch.from_ap(cls)
+    local v = watch.vals[cls] or {}
+    for _, p in ipairs((cfg.watch_actor_props or {})[cls] or {}) do
+        if not v[p] then return false end
+    end
+    return true
+end
+function watch.read(cls, obj)
+    local v = watch.vals[cls] or {}
+    watch.vals[cls] = v
+    for _, p in ipairs((cfg.watch_actor_props or {})[cls] or {}) do
+        if U.to_str(prop(obj, p)) == "true" then v[p] = true end
+    end
 end
 function watch.find_all()
     local again = false
     for cls in pairs(cfg.watch_actor_props or {}) do
-        for _, a in ipairs(FindAllOf(cls) or {}) do
-            local p = is_valid(a) and obj_path(a)
-            if p and not p:find("Default__", 1, true) then
-                local x, y, z = location_of(a)
-                if x == 0 and y == 0 and z == 0 then again = true
-                else watch.at[cls] = { path = p, x = x, y = y, z = z } end
+        if not watch.all_true(cls) then
+            local list = watch.seen[cls]
+            if not list then list = FindAllOf(cls) or {}; watch.seen[cls] = {} end
+            local live = {}
+            for _, a in ipairs(list) do
+                local p = is_valid(a) and obj_path(a)
+                if p and not p:find("Default__", 1, true) then
+                    live[#live + 1] = a
+                    local x, y, z = location_of(a)
+                    if x == 0 and y == 0 and z == 0 then again = true
+                    else watch.read(cls, a) end
+                end
             end
+            watch.seen[cls] = live
         end
     end
-    if again then watch.due = world_now_ms() + 2000 end
+    watch.tries = watch.tries + 1
+    if again and watch.tries < (cfg.watch_tries or 3) then watch.due = world_now_ms() + 2000 end
+end
+function watch.interacted(actor)
+    local needed = false
+    for c in pairs(cfg.watch_actor_props or {}) do needed = needed or not watch.all_true(c) end
+    if not needed then return end
+    local cls = class_name(actor)
+    if not (cfg.watch_actor_props or {})[cls] or watch.all_true(cls) then return end
+    watch.obj[cls], watch.read_until[cls] = actor, world_now_ms() + (cfg.watch_interact_ms or 60000)
 end
 function watch.actor(cls, greg)
     local now = world_now_ms()
     if watch.world ~= world.switches then
-        watch.world, watch.at, watch.due = world.switches, {}, now + (cfg.watch_settle_ms or 10000)
+        watch.world, watch.vals, watch.obj, watch.read_until = world.switches, {}, {}, {}
+        watch.seen, watch.tries = {}, 0
+        watch.due = now + (cfg.watch_settle_ms or 10000)
     end
-    if watch.due and now >= watch.due then watch.due = nil; watch.find_all() end
-    local at = watch.at[cls]
-    if not at then return nil end
-    local gx, gy, gz = 0, 0, 0
-    if greg then gx, gy, gz = location_of(greg) end
-    local r = cfg.watch_radius or 2500
-    if not (gx == 0 and gy == 0 and gz == 0) and (gx - at.x) ^ 2 + (gy - at.y) ^ 2 + (gz - at.z) ^ 2 > r * r then
-        return nil
+    if watch.due and now >= watch.due then
+        if watch.all_true(cls) then watch.due = nil
+        elseif now - (world.last_begin_ms or -1e9) < (cfg.watch_quiet_ms or 2000) then watch.due = now + 500
+        else watch.due = nil; watch.find_all() end
     end
-    local ok, o = pcall(StaticFindObject, at.path)
-    if ok and is_valid(o) then return o end
-    return nil
+    local obj = watch.obj[cls]
+    if obj and (now >= (watch.read_until[cls] or 0) or watch.all_true(cls)) then
+        watch.obj[cls], watch.read_until[cls], obj = nil, nil, nil
+    end
+    if obj and is_valid(obj) then
+        local ax, ay, az = location_of(obj)
+        local gx, gy, gz = 0, 0, 0
+        if greg then gx, gy, gz = location_of(greg) end
+        local r = cfg.watch_radius or 2500
+        if (gx == 0 and gy == 0 and gz == 0) or (gx - ax) ^ 2 + (gy - ay) ^ 2 + (gz - az) ^ 2 <= r * r then
+            watch.read(cls, obj)
+        end
+    end
+    return watch.vals[cls]
 end
 
 local function read_state()
@@ -304,13 +358,12 @@ local function read_state()
         end
     end
     for cls, props in pairs(cfg.watch_actor_props or {}) do
-        local obj = watch.actor(cls, greg)
-        if obj then
+        local vals = watch.actor(cls, greg)
+        if vals then
             s.actors = s.actors or {}
             for _, p in ipairs(props) do
-                local v = U.to_str(prop(obj, p))
-                s.scalars["Actor." .. cls .. "." .. p] = v
-                if v == "true" then s.actors[cls .. "." .. p] = true end
+                s.scalars["Actor." .. cls .. "." .. p] = vals[p] and "true" or "false"
+                if vals[p] then s.actors[cls .. "." .. p] = true end
             end
         end
     end
@@ -343,6 +396,7 @@ local function read_state()
         for _, k in ipairs(cfg.gregory_props) do s.scalars["Gregory." .. k] = U.to_str(prop(greg, k)) end
     end
     s.ready = inv ~= nil and greg ~= nil
+    s.world = world.switches
     if not s.ready then clock_seen_negative = false end
     if s.ready then
         s.clock_seconds = tonumber(call(find("GameClockSystem"), "GetCurrentTimeInSeconds"))
@@ -798,7 +852,7 @@ local function snapshot(reason)
         local new_check = loc and not ap.checks[loc] and (not ap:is_ap_name(n) or ap.boss_live[n]) and loc or nil
         ap_event("inventory", n)
         popup.inventory_added(n, inventory_seen(n), new_check)
-        popup.vanilla_added(n)
+        if last_state.ready and last_state.world == s.world then popup.vanilla_added(n) end
     end
     for _, n in ipairs(removed) do log:write("Change", "inventory - " .. n .. " (" .. reason .. ")") end
     added, removed = U.diff_sets(last_state.missions, s.missions)
@@ -869,6 +923,7 @@ local function make_callback(spec, is_actor)
                     df_wake()
                 end
                 if spec.check then pickup_quiet_until = df_now() + (cfg.after_pickup_quiet_s or 5) end
+                if spec.watch then watch.interacted(actor) end
             elseif spec.voice then
                 if not spec.on then return end
                 for i = 1, math.min(nparams, spec.max_params or nparams) do
@@ -1648,6 +1703,7 @@ function dl.staff_bot_show(k)
     end
     if not bot then log:write("AP", "Death Link: no staff bot in the world to show"); return end
     local greg = find("Gregory_C")
+    if greg and dl.greg_crouched(greg, k) then log:write("AP", "Death Link: Gregory is crouched (a vent?): no staff bot shown"); return end
     local gx, gy, gz = location_of(greg)
     local bx, by, bz = location_of(bot)
     local okr0, rot0 = pcall(function() return bot:K2_GetActorRotation() end)
@@ -1664,15 +1720,31 @@ function dl.staff_bot_show(k)
     log:write("AP", string.format("Death Link: staff bot %s %s %d units in front of Gregory, back in %.1f s", short,
         okm and "put" or "NOT put", d, (k.bot_show_ms or 3000) / 1000))
     if not okm then return end
+    local kept = dl.keep(bot)
     ExecuteWithDelay(k.bot_show_ms or 3000, function()
         on_game_thread("death link staff bot back", function()
-            local okb, b = pcall(StaticFindObject, path)
-            if not (okb and is_valid(b)) then return end
+            local b = kept()
+            if not b then return end
             pcall(function() b:K2_SetActorLocation({ X = bx, Y = by, Z = bz }, false, {}, true) end)
             pcall(function() b:K2_SetActorRotation({ Pitch = 0, Yaw = yaw0, Roll = 0 }, true) end)
             log:write("AP", "Death Link: staff bot " .. short .. " put back")
         end)
     end)
+end
+function dl.capsule_half(a)
+    local cap = prop(a, "CapsuleComponent")
+    return is_valid(cap) and tonumber(U.to_str(call(cap, "GetScaledCapsuleHalfHeight"))) or nil
+end
+function dl.greg_crouched(greg, k)
+    local h = dl.capsule_half(greg)
+    return h ~= nil and h < (k.min_greg_half or 50)
+end
+function dl.keep(obj)
+    local sw = world.switches
+    return function()
+        if world.switches ~= sw or world_busy() or not is_valid(obj) then return nil end
+        return obj
+    end
 end
 function dl.kill_moon(key, how)
     local c = dl_cfg()
@@ -1824,6 +1896,10 @@ function dl.staff_vanilla(k, trap)
     local tag = trap and "Security Alert" or "Death Link"
     local greg = find("Gregory_C")
     if not greg then return false end
+    if dl.greg_crouched(greg, k) then
+        log:write("AP", tag .. ": staff bot: Gregory is crouched (a vent?), none brought to him" .. (trap and ", once he stands up" or ""))
+        return trap and "wait" or false
+    end
     local _, _, gloc = dl.front_of(greg, 0)
     local classes = (k.bot_classes and #k.bot_classes > 0) and k.bot_classes
         or { "StaffBotSecurityPatrol_C", "StaffBotTalent_C" }
@@ -1908,15 +1984,14 @@ function dl.staff_vanilla(k, trap)
     end
     if not bot then return false end
     local short = full_name(bot):match("([^%.:]+)$") or "?"
-    local path = obj_path(bot)
+    local ghh, bhh = dl.capsule_half(greg), dl.capsule_half(bot)
+    if spawned and bhh and bhh < 1 then
+        log:write("AP", tag .. ": staff bot " .. short .. ": the new one is not set up (capsule 0), left to the game")
+        return false
+    end
     local bx, by, bz = location_of(bot)
     local okr0, rot0 = pcall(function() return bot:K2_GetActorRotation() end)
     local yaw0 = okr0 and tonumber(U.to_str(prop(rot0, "Yaw"))) or 0
-    local function half(a)
-        local cap = prop(a, "CapsuleComponent")
-        return is_valid(cap) and tonumber(U.to_str(call(cap, "GetScaledCapsuleHalfHeight"))) or nil
-    end
-    local ghh, bhh = half(greg), half(bot)
     if ghh and bhh then loc.Z = loc.Z - ghh + bhh + (k.z_offset or 0) end
     dl_step("staff bot: put in front of Gregory")
     local rot = { Pitch = 0, Yaw = yaw, Roll = 0 }
@@ -1982,7 +2057,7 @@ function dl.staff_vanilla(k, trap)
     if not trap then ap:expect_own_death(world_now() + (dl_cfg().own_death_s or 60)) end
     log:write("AP", string.format(tag .. ": staff bot %s %s %d units in front of Gregory; %s", short,
         okm and "put" or "NOT put", k.catch_dist or 150, table.concat(notes, ", ")))
-    local function now_bot() local okg, g = pcall(StaticFindObject, path); return (okg and is_valid(g)) and g or nil end
+    local now_bot = dl.keep(bot)
     local function scared(b)
         local gr = find("Gregory_C")
         return (gr and prop(gr, "IsGettingJumpScare") == true) or prop(b, "IsJumpscaring") == true or prop(b, "HasJumpscared") == true
@@ -4413,6 +4488,33 @@ function dl.cards_tick()
         end
     end
 end
+dl.fight = { name = nil, until_ms = 0 }
+function dl.fight_seen(cls)
+    local bf = apcfg.boss_fights or {}
+    local name = bf.enabled ~= false and (bf.classes or {})[cls]
+    if not name then return end
+    local now = world_now_ms()
+    if not dl.fight.name then log:write("AP", "boss fight: " .. name .. " (" .. cls .. "), items from AP held until it is over") end
+    dl.fight.name, dl.fight.until_ms = name, now + (bf.hold_ms or 30000)
+end
+function dl.fight_hold()
+    local f = dl.fight
+    if not f.name then return nil end
+    if world_now_ms() < f.until_ms then return f.name end
+    log:write("AP", string.format("boss fight: %s over (nothing for %d s), items from AP given again", f.name,
+        ((apcfg.boss_fights or {}).hold_ms or 30000) // 1000))
+    f.name = nil
+    return nil
+end
+function dl.stream_hold()
+    local q = apcfg.award_quiet_ms or 2000
+    if q <= 0 then return nil end
+    local now = world_now_ms()
+    if now - (world.last_begin_ms or -1e9) >= q then dl.stream_since = nil; return nil end
+    dl.stream_since = dl.stream_since or now
+    if now - dl.stream_since >= (apcfg.award_quiet_max_ms or 30000) then return nil end
+    return "an area streaming in"
+end
 function dl.awards_tick()
     local a = dl.awards
     local why = dl.player_busy()
@@ -4439,8 +4541,15 @@ local PROMPT_PARTS = { "KeyBindingIcon", "HoldProgress", "InformationItemImage",
 local prompt = { near = nil, shown = false, saved = nil }
 
 local function prompt_hud()
+    local kept = prompt.hud
+    if kept ~= nil and is_valid(kept) and call(kept, "IsInViewport") ~= false then return kept end
+    prompt.hud = nil
+    local now = world_now_ms()
+    if prompt.hud_next and now < prompt.hud_next then return nil end
+    prompt.hud_next = now + (apcfg.prompt_hud_retry_ms or 1000)
     local hud = dl.nt_hud()
     if not hud then return nil end
+    prompt.hud = hud
     local name = full_name(hud)
     if prompt.hud_name ~= name then
         local n = 0
@@ -4525,7 +4634,7 @@ local function popup_label(entry)
 end
 function popup.veil()
     if (apcfg.popup or {}).veil == false or popup.veiled or popup.veil_entry == popup.pending[1] then return end
-    local hud = find_live("PlayerHUD_C")
+    local hud = dl.popup_hud()
     local w = hud and prop(hud, "Informational")
     local img = hud and prop(hud, "InformationItemImage")
     if not (is_valid(w) and is_valid(img)) then return end
@@ -4540,7 +4649,7 @@ function popup.unveil(ours)
     local v = popup.veiled
     if not v then return end
     popup.veiled = nil
-    local hud = find_live("PlayerHUD_C")
+    local hud = dl.popup_hud()
     local w = hud and prop(hud, "Informational")
     local img = hud and prop(hud, "InformationItemImage")
     if is_valid(w) then
@@ -4589,6 +4698,16 @@ local function popup_texture(ctx, path, class)
     return nil, "no icon"
 end
 local function pstep(msg) if (apcfg.popup or {}).trace ~= false then log:write("AP", "popup step: " .. msg) end end
+function dl.popup_hud()
+    local h = popup.hud
+    if h ~= nil and is_valid(h) then return h end
+    popup.hud = nil
+    local now = world_now_ms()
+    if popup.hud_next and now < popup.hud_next then return nil end
+    popup.hud_next = now + ((apcfg.popup or {}).hud_retry_ms or 1000)
+    popup.hud = find_live("PlayerHUD_C")
+    return popup.hud
+end
 local function popup_tick(why)
     local pc = apcfg.popup or {}
     if pc.enabled == false then return end
@@ -4599,7 +4718,7 @@ local function popup_tick(why)
     if #popup.pending == 0 then popup.unveil(); return end
     if popup.veiled and popup_now() - popup.veiled.t > (pc.veil_s or 2) then popup.unveil() end
     local trace = pc.trace ~= false
-    local hud = find_live("PlayerHUD_C")
+    local hud = dl.popup_hud()
     local anim = hud and prop(hud, "InformationAnim")
     local w = hud and prop(hud, "Informational")
     local img = hud and prop(hud, "InformationItemImage")
@@ -4643,7 +4762,7 @@ local function popup_tick(why)
         end)
         if oki and pc.icon_fade ~= false then
             pcall(function() img:SetRenderOpacity(1) end)
-            popup.fade = { t0 = world_now_ms() }
+            popup.fade = { t0 = world_now_ms(), w = w, img = img, anim = anim, hud = hud }
         end
     end
     popup.done_once = true
@@ -4654,12 +4773,19 @@ end
 function dl.popup_fade_tick()
     local f = popup.fade
     if not f then return end
-    local hud = find_live("PlayerHUD_C")
-    local anim = hud and prop(hud, "InformationAnim")
-    local w = hud and prop(hud, "Informational")
-    local img = hud and prop(hud, "InformationItemImage")
-    if not (is_valid(w) and is_valid(img)) then popup.fade = nil; return end
-    local playing = is_valid(anim) and call(hud, "IsAnimationPlaying", anim) == true
+    local w, img = f.w, f.img
+    local busy = world_busy()
+    local over = world_now_ms() - f.t0 > ((apcfg.popup or {}).icon_fade_max_ms or 4500)
+    if busy or over or not (is_valid(w) and is_valid(img)) then
+        if over and not busy and is_valid(img) then
+            pcall(function() img:SetVisibility(ESLATE_HIDDEN) end)
+            pcall(function() img:SetRenderOpacity(1) end)
+        end
+        if over then log:write("AP", "popup: icon fade stopped after " .. (world_now_ms() - f.t0) .. " ms (still playing)") end
+        popup.fade, popup.icon_hidden = nil, true
+        return
+    end
+    local playing = is_valid(f.anim) and is_valid(f.hud) and call(f.hud, "IsAnimationPlaying", f.anim) == true
     if playing then
         local op = num(call(w, "GetRenderOpacity")) or num(prop(w, "RenderOpacity")) or 1
         pcall(function() img:SetRenderOpacity(op) end)
@@ -4679,7 +4805,7 @@ end
 function dl.popup_icon_back()
     if not popup.icon_hidden then return end
     popup.icon_hidden = false
-    local hud = find_live("PlayerHUD_C")
+    local hud = dl.popup_hud()
     local img = hud and prop(hud, "InformationItemImage")
     if is_valid(img) then
         pcall(function() img:SetRenderOpacity(1) end)
@@ -4855,7 +4981,7 @@ function dl.nt_show(hud, id, waiting)
     log:write("AP", string.format("notify: %s [%s%s, %s, text %s, screen %dx%d%s, %s]", name, where,
         okz and "" or " (size not set)", style, okx and "set" or "NOT set", math.floor(sw), math.floor(sh),
         known and "" or " (assumed)", snd))
-    return { box = obj_path(box), slot = obj_path(slot), x = x, y = y, start = world_now_ms(), name = name,
+    return { box = obj_path(box), slot = obj_path(slot), box_o = box, slot_o = slot, x = x, y = y, start = world_now_ms(), name = name,
              hold = (waiting >= (nc.busy_queue or 2) and (nc.hold_busy_s or 1.5) or (nc.hold_s or 3)) * 1000 }
 end
 function dl.nt_tick()
@@ -4881,8 +5007,10 @@ function dl.nt_tick()
     elseif t < fin + c.hold + fout then
         a, dy = 1 - (t - fin - c.hold) / fout, 0
     end
-    local box, slot = dl.obj(c.box), dl.obj(c.slot)
-    if not a or not (box and slot) then
+    local box, slot = c.box_o, c.slot_o
+    if not (box ~= nil and is_valid(box)) then box = nil end
+    if not (slot ~= nil and is_valid(slot)) then slot = nil end
+    if not a or not (box and slot) or world_busy() then
         if box then pcall(function() box:RemoveFromParent() end) end
         nt.cur = nil
         return
@@ -4978,7 +5106,8 @@ function dl.credits_hooks()
 end
 
 local function looking_at(x, y, z, range)
-    local cam = find_live("PlayerCameraManager")
+    local cam = prompt.cam
+    if not (cam ~= nil and is_valid(cam)) then cam = find_live("PlayerCameraManager"); prompt.cam = cam end
     if not cam then return false end
     local loc, rot = call(cam, "GetCameraLocation"), call(cam, "GetCameraRotation")
     local cx, cy, cz = tonumber(prop(loc, "X")), tonumber(prop(loc, "Y")), tonumber(prop(loc, "Z"))
@@ -5034,6 +5163,7 @@ function dl.prompt_hide_hook()
 end
 
 local function prompt_tick()
+    if world_busy() then return end
     local n = nil
     for _, c in ipairs(prompt.near and (prompt.near.list or { prompt.near }) or {}) do
         if (c.sphere and gregory_within(c.x, c.y, c.z, c.range)) or
@@ -5041,6 +5171,11 @@ local function prompt_tick()
     end
     local want = n ~= nil
     if want then
+        if prompt.shown and prompt.last_text == n.text then
+            local hud = prompt.hud
+            local panel = hud ~= nil and is_valid(hud) and prop(hud, "InformationPanel")
+            if panel and tonumber(U.to_str(call(panel, "GetVisibility"))) == ESLATE_VISIBLE then return end
+        end
         if prompt.shown then try("prompt check", dl.prompt_check, "before") end
         prompt.last_text = n.text
         local ok = prompt_set(n.text)
@@ -5082,26 +5217,25 @@ function dl.find_all(cls)
     local c = s.cache[cls]
     if not c or (now >= c.next and s.budget > 0) then
         if c then s.budget = s.budget - 1 end
-        local list, paths = {}, {}
+        local list = {}
         for _, a in ipairs(FindAllOf(cls) or {}) do
-            local p = is_valid(a) and obj_path(a)
-            if p then list[#list + 1] = a; paths[#paths + 1] = p end
+            if is_valid(a) and obj_path(a) then list[#list + 1] = a end
         end
-        s.cache[cls] = { paths = paths, next = now + every }
-        return list
+        s.cache[cls] = { objs = list, next = now + every }
+        return { table.unpack(list) }
     end
     local list = {}
-    for _, p in ipairs(c.paths) do
-        local a = obj_at(p)
-        if a then list[#list + 1] = a end
+    for _, a in ipairs(c.objs) do
+        if is_valid(a) then list[#list + 1] = a end
     end
+    c.objs = { table.unpack(list) }
     return list
 end
 function dl.lock_scan(cls, allow, locked)
     if allow then
         local pre = cls .. " "
         for key in pairs(locked) do
-            if key:sub(1, #pre) == pre then return dl.find_all(cls) end
+            if key:sub(1, #pre) == pre then dl.scans.cache[cls] = nil; return dl.find_all(cls) end
         end
         return {}
     end
@@ -5130,12 +5264,18 @@ end
 
 dl.lp = { due = nil, world = nil, sig = nil, spots = {} }
 function dl.lock_pickup_appeared(cls)
-    if (apcfg.lock_pickups or {})[cls] then dl.lp.due = world_now_ms() + (apcfg.lock_settle_ms or 1500) end
+    if (apcfg.lock_pickups or {})[cls] then
+        dl.lp.due = world_now_ms() + (apcfg.lock_settle_ms or 1500)
+        dl.scans.cache[cls] = nil
+    end
 end
-function dl.lock_pickups_scan(missions)
+function dl.lock_allowed(h, missions, tasks)
+    return (missions or {})[h.until_mission] == true or (h.until_task ~= nil and (tasks or {})[h.until_task] == true)
+end
+function dl.lock_pickups_scan(missions, tasks)
     local spots, again = {}, false
     for cls, h in pairs(apcfg.lock_pickups or {}) do
-        local allow = missions[h.until_mission] == true
+        local allow = dl.lock_allowed(h, missions, tasks)
         for _, a in ipairs(dl.lock_scan(cls, allow, locked_pickups)) do
             if is_valid(a) then
                 local key = full_name(a)
@@ -5164,15 +5304,19 @@ function dl.lock_pickups_scan(missions)
     end
     return spots, again
 end
-local function lock_pickups_tick(missions)
+local function lock_pickups_tick(missions, tasks)
     if missions == nil then prompt.near = nil; return end
     local P, now = dl.lp, world_now_ms()
     if P.world ~= world.switches then P.world, P.spots, P.due = world.switches, {}, now end
-    local sig = table.concat(U.sorted_keys(missions), "|")
+    local parts = {}
+    for _, cls in ipairs(U.sorted_keys(apcfg.lock_pickups or {})) do
+        parts[#parts + 1] = tostring(dl.lock_allowed(apcfg.lock_pickups[cls], missions, tasks))
+    end
+    local sig = table.concat(parts, "|")
     if sig ~= P.sig then P.sig, P.due = sig, now end
     if P.due and now >= P.due then
         local again
-        P.spots, again = dl.lock_pickups_scan(missions)
+        P.spots, again = dl.lock_pickups_scan(missions, tasks)
         P.due = again and (now + 2000) or nil
     end
     local near = nil
@@ -5182,7 +5326,14 @@ end
 
 local held_triggers = {}
 dl.om = { seen_undone = false, remove_at = nil, removed = 0, said = {}, near = {}, next_near = 0,
-          swapped = false, award_hooked = nil, world = nil, why = nil, due = {}, unrestricted = {}, pos = {} }
+          swapped = false, award_hooked = nil, world = nil, why = nil, due = {}, unrestricted = {}, pos = {}, obj = {} }
+dl.last_begin_ms = 0
+function dl.om_obj(path)
+    local o = path and dl.om.obj[path]
+    if o ~= nil and is_valid(o) then return o end
+    if path then dl.om.obj[path], dl.om.pos[path] = nil, nil end
+    return nil
+end
 local function om_say(key, text)
     if not dl.om.said[key] then dl.om.said[key] = true; log:write("AP", text) end
 end
@@ -5199,6 +5350,7 @@ end
 function dl.om_keep_pos(actor, path)
     local x, y, z = location_of(actor)
     if not (x == 0 and y == 0 and z == 0) then dl.om.pos[path] = { x = x, y = y, z = z } end
+    dl.om.obj[path] = actor
 end
 function dl.office_appeared(actor, cls)
     local c = apcfg.office_monty or {}
@@ -5246,7 +5398,7 @@ end
 local function om_swap(c)
     dl.om.swapped = false
     if not (ap and apcfg.block_vanilla and c.swap_award ~= false and c.office) then return end
-    local ogm = obj_at(c.office)
+    local ogm = dl.om_obj(c.office)
     if not ogm then return end
     local cur = U.to_str(prop(ogm, "ItemAward"))
     local orig, already = ap:original_name(cur or "")
@@ -5268,7 +5420,7 @@ local function om_monty(c, h, why)
     if not ok then om_say("monty remove", "office Monty: Remove failed, left to the game (" .. tostring(err) .. ")") end
 end
 local function om_door(path, why)
-    local door = obj_at(path)
+    local door = dl.om_obj(path)
     local comp = door and prop(door, "Door")
     local locked = is_valid(comp) and prop(comp, "bIsLockedForPlayer")
     om_say("doorstate " .. path, string.format("office scene door %s: %s, door component %s, locked for the player %s", path,
@@ -5296,7 +5448,7 @@ end
 local PAWN_NONE = 0
 local function om_unrestrict(path, why)
     if dl.om.unrestricted[path] then return end
-    local door = obj_at(path)
+    local door = dl.om_obj(path)
     local comp = door and prop(door, "Door")
     if not is_valid(comp) then return end
     dl.om.unrestricted[path] = true
@@ -5355,7 +5507,8 @@ function dl.office_monty_tick(missions, tasks)
     end
     local gx, gy, gz = nil, nil, nil
     local function near(path)
-        local p = om.pos[path]
+        if now - dl.last_begin_ms < (c.stream_quiet_ms or 2000) then return false end
+        local p = dl.om_obj(path) and om.pos[path]
         if not p then return false end
         if gx == nil then
             local greg = find("Gregory_C")
@@ -5402,7 +5555,7 @@ function dl.office_monty_tick(missions, tasks)
             if due("door " .. path, path) and c.unrestrict_doors ~= false then om_unrestrict(path, why) end
         end
         if due("monty", c.handler) then
-            local h = obj_at(c.handler)
+            local h = dl.om_obj(c.handler)
             if h then om_monty(c, h, why) end
         end
         return
@@ -5413,7 +5566,7 @@ function dl.office_monty_tick(missions, tasks)
     if c.entered_flag and flag(c.entered_flag) then return end
     local early = nil
     for _, it in ipairs(c.early_items or {}) do if not early and game.has(it) then early = it end end
-    local h = early and obj_at(c.handler)
+    local h = early and dl.om_obj(c.handler)
     if h then om_monty(c, h, early .. " owned before entering the office") end
 end
 
@@ -5449,6 +5602,11 @@ end
 function dl.lock_actor_appeared(cls)
     if (apcfg.lock_actors or {})[cls] then dl.lock.due[cls] = world_now_ms() + (apcfg.lock_settle_ms or 1500) end
 end
+function dl.in_levels(key, levels)
+    if not levels then return true end
+    for _, lv in ipairs(levels) do if key:find(lv, 1, true) then return true end end
+    return false
+end
 local function lock_actors_scan(cls, h, allow)
     local L, again = dl.lock, false
     for _, a in ipairs(FindAllOf(cls) or {}) do
@@ -5456,7 +5614,14 @@ local function lock_actors_scan(cls, h, allow)
         if not (addr and L.done[addr]) and is_valid(a) then
             local key = full_name(a)
             local short_key = key:match("([^%.:]+)$") or key
-            if not allow then
+            if not dl.in_levels(key, h.levels) then
+                if addr then L.done[addr] = true end
+                if dl.locked_actors[key] then
+                    call(a, "SetActorEnableCollision", true)
+                    dl.locked_actors[key] = nil
+                    log:write("AP", string.format("%s open again: not one of the elevators kept closed", short_key))
+                end
+            elseif not allow then
                 local x, y, z = location_of(a)
                 if not (x == 0 and y == 0 and z == 0) then
                     if not dl.seen_actors[key] then
@@ -5551,6 +5716,7 @@ function dl.arcade_appeared(cls)
     local locks = apcfg.arcade_locks
     if locks and cls == (locks.class or "BP_MiniGame_Activator_C") then
         dl.arcade.due = world_now_ms() + (apcfg.lock_settle_ms or 1500)
+        dl.scans.cache[cls] = nil
     end
 end
 local function arcade_sig(locks, has_client)
@@ -5741,7 +5907,7 @@ local function ap_tick()
     if last_state and last_state.ready then dl.timed("office monty", dl.office_monty_tick, game.missions, game.tasks) end
     if last_state and last_state.ready and (apcfg.office_monty or {}).log_locked_doors then dl.timed("locked doors", dl.locked_doors_tick) end
     if last_state and last_state.ready and not quiet then
-        dl.timed("lock pickups", lock_pickups_tick, game.missions)
+        dl.timed("lock pickups", lock_pickups_tick, game.missions, game.tasks)
         dl.timed("arcade locks", function()
             local n = arcade_locks_tick(has_client)
             if n and not prompt.near then prompt.near = n end
@@ -5766,7 +5932,9 @@ local function ap_tick()
     if has_client and apcfg.inject and inv and ready_polls >= (apcfg.ready_polls or 3) then
         game.security_level = tonumber(U.to_str(prop(inv, "SecurityLevel")))
         game.gregory = find("Gregory_C") ~= nil
-        for _, a in ipairs(ap:plan(game)) do
+        local fight = dl.fight_hold() or dl.stream_hold()
+        if fight then ap:once("wait:" .. world.switches .. ":" .. fight, "items from AP wait: " .. fight) end
+        for _, a in ipairs(fight and {} or ap:plan(game)) do
             if a.op == "award" and dl.awards.why and dl.hold_on() then
                 ap:once("held:" .. a.name .. ":" .. dl.awards.why, string.format("AwardItem %s waits: %s", a.name, dl.awards.why))
             else
@@ -5788,6 +5956,15 @@ end
 if ap and apcfg.block_vanilla then
     local first = true
     local skip_class = {}
+    function dl.hook_parent(cls)
+        if not dl.hook_parents then
+            dl.hook_parents = {}
+            for p, kids in pairs(cfg.hook_class_children or {}) do
+                for _, k in ipairs(kids) do dl.hook_parents[k:lower()] = p end
+            end
+        end
+        return dl.hook_parents[(cls or ""):lower()]
+    end
     local function wanted(cls)
         return (apcfg.condition_swaps or {})[cls]
             or ((apcfg.daycare_flashlight or {}).stash_classes or {})[cls]
@@ -5796,13 +5973,18 @@ if ap and apcfg.block_vanilla then
         if world.in_minigame then return end
         local actor = U.unwrap(ctx)
         local cls = class_name(actor)
+        dl.last_begin_ms = world_now_ms()
+        world.last_begin_ms = dl.last_begin_ms
         if world.hook_seen[cls] == false then world.hook_seen[cls] = world_now_ms() end
+        local parent = dl.hook_parent(cls)
+        if parent and world.hook_seen[parent] == false then world.hook_seen[parent] = world_now_ms() end
         dl.lock_actor_appeared(cls)
         try("boss area", dl.boss_appeared, actor, cls)
+        dl.fight_seen(cls)
         dl.arcade_appeared(cls)
         dl.lock_pickup_appeared(cls)
         dl.office_appeared(actor, cls)
-        watch.appeared(cls)
+        watch.appeared(cls, actor)
         dl.card_trigger_appeared(actor, cls)
         if skip_class[cls] then return end
         if wanted(cls) then
@@ -5856,6 +6038,8 @@ local function on_new_controller(pc)
     spawned_force("world switch")
     for _, e in pairs(effects) do e.until_ms = 0 end
     prompt.near, prompt.shown = nil, false
+    prompt.hud, prompt.hud_next, prompt.cam, prompt.saved, prompt.last_text = nil, nil, nil, nil, nil
+    popup.hud, popup.hud_next, popup.fade = nil, nil, nil
     local was = world.in_minigame
     world.in_minigame = not real
     if not real and full:find(cfg.title_map or "MAP_Title", 1, true) then world.from_title = true end
@@ -5949,6 +6133,72 @@ LoopAsync(((apcfg.effects or {}).foxy or {}).tick_ms or 25, function()
 end)
 LoopAsync((apcfg.received_notify or {}).tick_ms or 25, function()
     if dl.nt.cur or #dl.nt.queue > 0 then on_game_thread("notify", dl.nt_tick) end
+    return false
+end)
+dl.tip = { hooked = {}, loaded = {} }
+function dl.tip_pick(tc)
+    local list = {}
+    for _, t in ipairs(tc.texts or {}) do
+        local text = type(t) == "table" and t[1] or t
+        if type(text) == "string" and (#(tc.texts) == 1 or text ~= dl.tip.cur) then
+            list[#list + 1] = { text, math.max(0, tonumber(type(t) == "table" and t.weight or 1) or 1) }
+        end
+    end
+    local total = 0
+    for _, e in ipairs(list) do total = total + e[2] end
+    if total <= 0 then return tc.text or "ALWAYS create a new save slot" end
+    local r = math.random() * total
+    for _, e in ipairs(list) do
+        r = r - e[2]
+        if r < 0 then return e[1] end
+    end
+    return list[#list][1]
+end
+function dl.tip_set(ctx, new)
+    local tc = apcfg.loading_tip or {}
+    if tc.enabled == false then return end
+    local w = U.unwrap(ctx)
+    if not is_valid(w) then return end
+    local tb = prop(w, tc.widget or "GameTipsText")
+    if not is_valid(tb) then return end
+    local addr = obj_addr(w)
+    if new or not dl.tip.cur or addr ~= dl.tip.addr then dl.tip.cur, dl.tip.addr = dl.tip_pick(tc), addr end
+    local text = dl.tip.cur
+    local ok = pcall(function() tb:SetText(FText(text)) end)
+    if not dl.tip.said then
+        dl.tip.said = true
+        log:write("AP", "loading tip: " .. (ok and "set" or "NOT set"))
+    end
+end
+function dl.tip_hooks()
+    local tc = apcfg.loading_tip or {}
+    if tc.enabled == false then return true end
+    local all = true
+    for _, cpath in ipairs(tc.classes or {}) do
+        if not dl.tip.hooked[cpath] and not dl.obj(cpath) and tc.load ~= false and type(LoadAsset) == "function"
+            and world.switches >= 1 and not dl.tip.loaded[cpath] then
+            dl.tip.loaded[cpath] = true
+            local okl = pcall(LoadAsset, cpath)
+            log:write("AP", string.format("loading tip: %s not loaded yet: LoadAsset %s%s", cpath,
+                okl and "called" or "FAILED", dl.obj(cpath) and "" or " (still not there)"))
+        end
+        if not dl.tip.hooked[cpath] and dl.obj(cpath) then
+            local fn = function(ctx) try("loading tip", dl.tip_set, ctx) end
+            local ok1 = dl.on_construct(cpath, function(ctx) try("loading tip", dl.tip_set, ctx, true) end)
+            local ok2 = pcall(RegisterHook, cpath .. ":" .. (tc.update_fn or "UpdateTip"), fn, fn)
+            dl.tip.hooked[cpath] = (ok1 or ok2) and "set" or "failed"
+            log:write("AP", string.format("loading tip: %s hooks %s (Construct %s, %s %s)", cpath,
+                (ok1 or ok2) and "set" or "NOT set", ok1 and "ok" or "no", tc.update_fn or "UpdateTip", ok2 and "ok" or "no"))
+        end
+        if not dl.tip.hooked[cpath] then all = false end
+    end
+    return all
+end
+LoopAsync((apcfg.loading_tip or {}).tick_ms or 1000, function()
+    if dl.tip.done then return true end
+    if world_now() >= world.pause_until then
+        on_game_thread("loading tip hooks", function() dl.tip.done = dl.tip_hooks() end)
+    end
     return false
 end)
 LoopAsync((apcfg.credits or {}).tick_ms or 1000, function()
