@@ -2,9 +2,10 @@ from typing import TYPE_CHECKING, Callable
 
 from BaseClasses import CollectionState
 
-from .data import (AREA_BY_KEY, AREA_STORY_GATE, ATRIUM_BADGE, BADGE, BADGE_FORKS, COLLECTIBLE_ITEM_NAMES,
-                   ATRIUM_ITEMS, DAYCARE_PASS, FAZ_CAM, GOLDEN_ITEMS, PASS_COUNTS, PROGRESSIVE_FLASHLIGHT,
-                   SHUFFLED_ATRIUM_BADGE, Area, Ending, mission_closure, missions_need_atrium)
+from .data import (ABILITY_INSTALL_MISSION, AREA_BY_KEY, AREA_STORY_GATE, ATRIUM_BADGE, BADGE, BADGE_FORKS,
+                   COLLECTIBLE_ITEM_NAMES, ATRIUM_ITEMS, DAYCARE_PASS, FAZ_CAM, GOLDEN_ITEMS, PASS_COUNTS,
+                   PROGRESSIVE_FLASHLIGHT, SHUFFLED_ATRIUM_BADGE, Area, Ending, mission_closure,
+                   missions_need_atrium)
 
 COLLECTIBLES = tuple(COLLECTIBLE_ITEM_NAMES.values())
 
@@ -121,14 +122,29 @@ def area_badge_need(world: "FNaFSBWorld", area: Area) -> int:
     return area.badge
 
 
+def ability_rule(world: "FNaFSBWorld", name: str) -> Callable[[CollectionState], bool]:
+    """An ability (data.ABILITY_INSTALL_MISSION) works once installed on Freddy: the item AND the mission after which the game installs it at Parts & Service."""
+    player = world.player
+    installed = missions_rule(world, (ABILITY_INSTALL_MISSION[name],))
+    return lambda state: state.has(name, player) and installed(state)
+
+
 def location_requires_rule(world: "FNaFSBWorld", requires: tuple) -> Callable[[CollectionState], bool]:
     """Extra rule for a single location on top of its area's access rule (e.g. Monty's Claws)."""
     player = world.player
+    items = tuple(name for name in requires if name not in ABILITY_INSTALL_MISSION)
+    abilities = [ability_rule(world, name) for name in requires if name in ABILITY_INSTALL_MISSION]
 
     def rule(state: CollectionState) -> bool:
-        return all(state.has(name, player) for name in requires)
+        return all(state.has(name, player) for name in items) and all(r(state) for r in abilities)
 
     return rule
+
+
+def badge_rule(world: "FNaFSBWorld", level: int) -> Callable[[CollectionState], bool]:
+    """A location that needs a Security Badge level of its own (data.LOCATION_BADGE_NEEDS)."""
+    player = world.player
+    return lambda state: state.count(BADGE, player) >= level
 
 
 def junk_only_item_rule(item) -> bool:
@@ -150,15 +166,15 @@ def ending_exit_rule(world: "FNaFSBWorld", ending: Ending) -> Callable[[Collecti
     """Rule for the single ending selected by the Goal option (see regions.py -- only one Ending's entrance/location is ever built per seed, so this never needs to check which goal is active)."""
     player = world.player
     story = missions_rule(world, ending.missions)
+    abilities = [ability_rule(world, name) for name in ending.abilities]
 
     def rule(state: CollectionState) -> bool:
         if not story(state):
             return False
         if state.count(BADGE, player) < ending.badge:
             return False
-        for ability in ending.abilities:
-            if not state.has(ability, player):
-                return False
+        if not all(r(state) for r in abilities):
+            return False
         if ending.needs_camera and not state.has(FAZ_CAM, player):
             return False
         if ending.needs_goldens:

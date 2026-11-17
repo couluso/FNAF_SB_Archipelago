@@ -92,7 +92,6 @@ T.locations.collect["FlashBeacon"] = 91541012
 T.location_info[91541012] = { key = "monty_golf.faz_camera", status = "FORT" }
 T.locations.collect["Flashlight"] = 91541199
 T.location_info[91541199] = { key = "daycare.flashlight", status = "VERIFIE" }
--- the lobby security office camera button (its minigame's ItemAward, swapped by the mod)
 T.locations.collect["CamerasOffice_Intro"] = 91541202
 T.location_info[91541202] = { key = "atrium.lobby_office_cameras", status = "FAIBLE" }
 T.locations.collect["FlashlightUpgrade_0"] = 91541096
@@ -411,10 +410,6 @@ T.locations.mission["UpgradeFreddy"] = 91541190
 T.location_info[91541190] = { key = "parts_service.mission_upgrade_freddy", status = "FORT" }
 T.locations.mission["Warehouse"] = 91541175
 T.location_info[91541175] = { key = "warehouse.mission_warehouse", status = "FORT" }
-T.locations.task["LoadingDock#2"] = 91541156
-T.location_info[91541156] = { key = "loading_dock.escape_chica_chase", status = "VERIFIE" }
-T.locations.task["PrizeCounter#4"] = 91541157
-T.location_info[91541157] = { key = "rockstar_row.survive_lockdown", status = "FAIBLE" }
 T.locations.voice["VANESSA_00002"] = 91541158
 T.location_info[91541158] = { key = "atrium.freddy_lockdown_cutscene", status = "VERIFIE" }
 

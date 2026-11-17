@@ -3,9 +3,9 @@ from typing import TYPE_CHECKING
 from BaseClasses import Location, Region
 
 from .data import (AREAS, COLLECTIBLE_PRESENT_KEYS, DAYCARE_JUNK_ONLY_KEYS, ENDING_BY_GOAL, ENTRANCE_LOCATION_KEYS, ENTRANCE_REGION, HOURS,
-                   LOCATION_EXTRA_NEEDS, LOCATION_MISSION_GATE, RETIRED_LOCATION_KEYS,
+                   LOCATION_BADGE_NEEDS, LOCATION_EXTRA_NEEDS, LOCATION_MISSION_GATE, RETIRED_LOCATION_KEYS,
                    LOCATIONS, LOCATION_NAME_TO_ID, MISSION_BY_INTERNAL, VICTORY_EVENT)
-from .rules import (area_entrance_rule, atrium_rule, daycare_door_rule, ending_exit_rule, junk_only_item_rule,
+from .rules import (area_entrance_rule, atrium_rule, badge_rule, daycare_door_rule, ending_exit_rule, junk_only_item_rule,
                     location_extra_rule, location_requires_rule, missions_rule)
 
 HOUR_MISSIONS = {str(hour): missions for hour, _, missions in HOURS}
@@ -36,6 +36,8 @@ def _location_rule(world: "FNaFSBWorld", loc):
         rules.append(missions_rule(world, (LOCATION_MISSION_GATE[loc.key],)))
     if loc.key in LOCATION_EXTRA_NEEDS:
         rules.append(location_extra_rule(world, LOCATION_EXTRA_NEEDS[loc.key]))
+    if loc.key in LOCATION_BADGE_NEEDS:
+        rules.append(badge_rule(world, LOCATION_BADGE_NEEDS[loc.key]))
     if not rules:
         return None
     if len(rules) == 1:

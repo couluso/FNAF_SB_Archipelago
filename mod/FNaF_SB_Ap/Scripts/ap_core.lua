@@ -29,7 +29,9 @@ function A.new(opts)
     self.logged_once = {}
     self.recorded_now = {}
     self.opened = {}
+    self.minigame_done = {}
     self.taken = {}
+    self.boss_live, self.boss_taken, self.boss_release = {}, {}, {}
     self.endings = {}
     self.goal = false
     self.last_text = nil
@@ -155,6 +157,7 @@ end
 -- ledger
 function A:load_state()
     self.checks, self.used, self.taken = {}, {}, {}
+    self.opened, self.minigame_done = {}, {}
     self.deaths = 0
     self.endings, self.goal = {}, false
     local text = self.fs.read(self:state_path())
@@ -205,6 +208,29 @@ function A:is_vanilla(name)
     return v[name] == true
 end
 
+function A:boss_area(name) return type(name) == "string" and (self.cfg.boss_areas or {})[name] ~= nil end
+function A:boss_hold(name) return self.boss_live[name] == true and not self.boss_taken[name] end
+function A:boss_location(name) return self:boss_area(name) and self.T.locations.inventory[name] or nil end
+function A:boss_enter(name, why)
+    if self.boss_live[name] then return end
+    self.boss_live[name], self.boss_taken[name] = true, nil
+    self.log(string.format("boss area of %s loaded (%s): %s kept out of the inventory until it is taken there",
+        name, why, name))
+end
+function A:boss_leave(name)
+    if not self.boss_live[name] then return end
+    local kept = self.boss_taken[name] and not self:desired().award_set[name]
+    self.boss_live[name], self.boss_taken[name] = nil, nil
+    if kept then self.boss_release[name] = true end
+    self.log(string.format("boss area of %s unloaded%s", name, kept and ": taken back, not received through AP" or ""))
+end
+function A:boss_took(name)
+    if not self:boss_hold(name) then return false end
+    self.boss_taken[name] = true
+    self.log(string.format("%s taken from its beaten animatronic: kept while its area is loaded", name))
+    return true
+end
+
 function A:pickup_checked(name)
     local id = self.T.locations.collect[(self:original_name(name))]
     return id ~= nil and self.checks[id] == true
@@ -233,6 +259,10 @@ function A:swap_name(name, forced)
 end
 
 function A:inventory_added(name)
+    if self:boss_area(name) and self.boss_live[name] then
+        self:boss_took(name)
+        return nil
+    end
     local original, swapped = self:original_name(name)
     if name == self:opened_name() and name ~= "None" then
         self.log("vanilla reward blocked: an opened pickup gave " .. name)
@@ -240,7 +270,6 @@ function A:inventory_added(name)
     end
     if swapped then
         self.log(string.format("vanilla reward blocked: the %s pickup gave %s", original, name))
-        -- a minigame's swapped award (lobby office cameras): its location, in case the award hook missed it
         if ((self.cfg.office_monty or {}).awards or {})[original] then self:on_event("collect", name) end
         return self.cfg.remove_swap_items ~= false and "remove" or nil
     end
@@ -287,6 +316,7 @@ function A:on_event(detect, name)
     name, swapped = self:original_name(name)
     if swapped and detect ~= "collect" then return false end
     if swapped then self.opened[name] = true end
+    if swapped and ((self.cfg.office_monty or {}).awards or {})[name] then self.minigame_done[name] = true end
     if detect == "collect" and not swapped and (self.cfg.listed_only or {})[name] then
         return false
     end
@@ -296,6 +326,10 @@ function A:on_event(detect, name)
         self.log(string.format("pickup %s taken: the AP item held back can be given now", name))
     end
     local id = (self.T.locations[detect] or {})[name]
+    if not id and detect == "collect" and not swapped and self:boss_area(name) then
+        id = self:boss_location(name)
+        self:boss_took(name)
+    end
     if not id then
         local alias = (self.cfg.event_aliases or {})[detect .. " " .. name]
         if alias and not (detect == "inventory" and self:is_ap_name(name)) then
@@ -309,7 +343,7 @@ function A:on_event(detect, name)
         end
         return false
     end
-    if detect == "inventory" and self:is_ap_name(name) then
+    if detect == "inventory" and self:is_ap_name(name) and not (self:boss_area(name) and self.boss_live[name]) then
         return false
     end
     if detect == "clock" and not self.cfg.clock_checks then
@@ -354,7 +388,6 @@ function A:check_goal()
         table.concat(seen, ", "), g))
     return false
 end
-
 
 function A:game_deaths(n, now, muted)
     n = tonumber(n)
@@ -486,6 +519,17 @@ function A:plan(game)
         actions[#actions + 1] = { op = "security", level = d.level }
     end
     local awards = 0
+    for name in pairs(self.cfg.block_vanilla and self.cfg.boss_areas or {}) do
+        local has = game.has(name)
+        if has and self:boss_hold(name) then
+            self:once("bossout:" .. name, string.format("%s taken out of the inventory: its boss area is loaded", name))
+            actions[#actions + 1] = { op = "remove", name = name }
+        elseif has and self.boss_release[name] and not self.boss_live[name] and not d.award_set[name] then
+            actions[#actions + 1] = { op = "remove", name = name }
+        elseif not has or d.award_set[name] then
+            self.boss_release[name] = nil
+        end
+    end
     for _, name in ipairs(d.awards) do
         if awards >= max_awards then break end
         local attempts = self.award_attempts[name] or 0
@@ -497,6 +541,10 @@ function A:plan(game)
         local wait = (self.suspended or {})[name]
         if wait and self:now() >= wait.untilt then
             self.suspended[name], self.had[name], wait = nil, nil, nil
+        end
+        if self:boss_hold(name) then
+            self:once("bosshold:" .. name, string.format("holding %s until it is taken from its beaten animatronic", name))
+            wait = { untilt = math.huge }
         end
         local delay = (self.cfg.regive_delay or {})[name]
         if has == false and not wait and delay and self.had[name] then
@@ -551,7 +599,9 @@ function A:task_actions(game)
     for name, t in pairs(self.T.story_items or {}) do
         local id = self.T.locations.collect[name]
         local key = t.mission .. "#" .. t.task
-        local due = ((id and self.checks[id]) or self.opened[name]) and self:story_task(name) and self.ap_names[name]
+        local award = ((self.cfg.office_monty or {}).awards or {})[name]
+        local got = award and self.minigame_done[name] or (not award and ((id and self.checks[id]) or self.opened[name]))
+        local due = got and self:story_task(name) and self.ap_names[name]
             and (game.active or {})[t.mission] and not (game.missions or {})[t.mission]
             and not (game.tasks or {})[key]
         if due then
@@ -565,6 +615,42 @@ function A:task_actions(game)
     end
     table.sort(actions, function(a, b) return a.key < b.key end)
     return actions
+end
+
+function A:mission_fallbacks(game)
+    local names = {}
+    for m in pairs(self.cfg.mission_fallbacks or {}) do names[#names + 1] = m end
+    table.sort(names)
+    for _, mission in ipairs(names) do
+        local f = self.cfg.mission_fallbacks[mission]
+        local id = self.T.locations.mission[mission]
+        local d, n = (f.after or ""):match("^(%S+)%s+(.+)$")
+        local need = d and (self.T.locations[d] or {})[n]
+        if id and not self.checks[id] and not (game.missions or {})[mission] and (not f.after or (need and self.checks[need])) then
+            local why
+            if f.task and (game.tasks or {})[mission .. "#" .. f.task] then why = "task " .. mission .. "_" .. f.task .. " done" end
+            for _, m in ipairs(f.missions or {}) do
+                if not why and ((game.active or {})[m] or (game.missions or {})[m]) then why = "mission " .. m .. " started" end
+            end
+            if not why and f.area then
+                for _, cid in ipairs(sorted_ids(self.checks)) do
+                    local k = (self.T.location_info[cid] or {}).key
+                    if cid ~= id and type(k) == "string" and k:sub(1, #f.area + 1) == f.area .. "." then
+                        why = "check " .. k .. " already sent"
+                        break
+                    end
+                end
+            end
+            if why then
+                self:record_check(id, string.format("mission %s the game can't finish anymore: %s%s", mission,
+                    f.after and (f.after .. " and ") or "", why))
+            end
+        end
+    end
+end
+
+function A:new_world()
+    self.minigame_done = {}
 end
 
 function A:done(action, ok)

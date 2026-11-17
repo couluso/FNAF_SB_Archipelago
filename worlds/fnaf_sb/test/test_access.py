@@ -1,3 +1,4 @@
+from BaseClasses import CollectionState
 from test.bases import WorldTestBase
 
 from ..data import (AREA_BY_KEY, BACKSTAGE_PASS, BADGE, BAGS, BEAK, BOWLING_TICKET, CAMERA_ITEMS, CLAWS,
@@ -69,7 +70,7 @@ class TestDefaults(FNaFSBTestBase):
 
     def test_lobby_past_the_entrance_needs_the_entry_pass(self) -> None:
         names = [LOCATION_BY_KEY[k].name for k in ("atrium.bag_hi_dave", "atrium.bag_easy_money",
-                                                   "atrium.mr_hippo_magnet", "atrium.cupcake_pinata")]
+                                                   "atrium.mr_hippo_magnet")]
         for name in names:
             self.assertFalse(self.reach(name), name)
         self.collect_by_name(ENTRY_PASS)
@@ -163,11 +164,35 @@ class TestDefaults(FNaFSBTestBase):
         self.assertTrue(self.region("Utility Tunnels"))
 
     def test_ability_gated_location(self) -> None:
-        self.collect_by_name(DAYCARE_ITEMS)
+        self.collect_by_name(DAYCARE_ITEMS + [CLAWS])
         self.badges_to(3)
         name = LOCATION_BY_KEY["utility_tunnels.golden_roxy_plush"].name
         self.assertFalse(self.reach(name))
-        self.collect_by_name(CLAWS)
+        self.collect_by_name(BACKSTAGE_PASS)
+        self.badges_to(5)
+        self.assertTrue(self.reach(name))
+
+    def test_ability_item_alone_opens_nothing(self) -> None:
+        self.collect_by_name(DAYCARE_ITEMS + [CLAWS, BEAK])
+        self.badges_to(8)
+        for key in ("utility_tunnels.golden_roxy_plush", "utility_tunnels.comedy_mask", "utility_tunnels.bag_torn_paper"):
+            self.assertFalse(self.reach(LOCATION_BY_KEY[key].name), key)
+
+    def test_free_roam_areas_wait_for_parts_and_service(self) -> None:
+        self.collect_by_name(DAYCARE_ITEMS + ["Dance Pass"])
+        self.badges_to(4)
+        for key in ("kids_cove.golden_sun", "roxy_raceway.dance_pass", "beauty_salon.shoes"):
+            self.assertFalse(self.reach(LOCATION_BY_KEY[key].name), key)
+        self.collect_by_name(BACKSTAGE_PASS)
+        self.badges_to(5)
+        for key in ("kids_cove.golden_sun", "roxy_raceway.dance_pass", "beauty_salon.shoes"):
+            self.assertTrue(self.reach(LOCATION_BY_KEY[key].name), key)
+
+    def test_front_desk_present_needs_level_4(self) -> None:
+        name = LOCATION_BY_KEY["atrium.cupcake_pinata"].name
+        self.collect_by_name(ENTRY_PASS)
+        self.assertFalse(self.reach(name))
+        self.badges_to(4)
         self.assertTrue(self.reach(name))
 
     def test_upgrade_machine_comp_pass_step(self) -> None:
@@ -249,11 +274,11 @@ class TestDefaults(FNaFSBTestBase):
 
     def test_complete_and_story_locations(self) -> None:
         self.assertEqual(len(COMPLETE_EVENTS), 3)
-        for key in ("loading_dock.escape_chica_chase", "rockstar_row.survive_lockdown",
-                    "atrium.freddy_lockdown_cutscene"):
-            self.assertIsNotNone(self.multiworld.get_location(LOCATION_BY_KEY[key].name, self.player))
+        self.assertIsNotNone(self.multiworld.get_location(
+            LOCATION_BY_KEY["atrium.freddy_lockdown_cutscene"].name, self.player))
         names = {l.name for l in self.multiworld.get_locations(self.player)}
-        self.assertNotIn(LOCATION_BY_KEY["daycare.complete_area"].name, names)
+        for key in ("daycare.complete_area", "loading_dock.escape_chica_chase", "rockstar_row.survive_lockdown"):
+            self.assertNotIn(LOCATION_BY_KEY[key].name, names)
 
     def test_daycare_castle_upgrade_never_progression(self) -> None:
         badge_item = self.world.create_item(BADGE)
@@ -426,6 +451,45 @@ class TestStartingAreas(FNaFSBTestBase):
         precollected = [i.name for i in self.multiworld.precollected_items[self.player] if i.name in pass_names]
         self.assertEqual(len(precollected), 3)
         self.assertEqual(len(set(precollected)), 3)
+
+    def test_universal_tracker_rebuilds_the_options(self) -> None:
+        world = self.multiworld.worlds[self.player]
+        slot = world.interpret_slot_data({"goal": "afton", "present_sanity": False, "bag_sanity": 1,
+                                          "randomize_security_badges": False, "starting_passes": ["Dance Pass"]})
+        self.multiworld.re_gen_passthrough = {self.game: slot}
+        try:
+            self.assertTrue(world._ut_options())
+        finally:
+            del self.multiworld.re_gen_passthrough
+        self.assertEqual(world.options.goal.current_key, "afton")
+        self.assertFalse(world.options.present_sanity)
+        self.assertEqual(world.options.bag_sanity.value, 1)
+        self.assertFalse(world.options.randomize_security_badges)
+        self.assertEqual(world.starting_passes, ["Dance Pass"])
+        self.assertIn("starting_passes", world.fill_slot_data())
+
+
+class TestNoStartingPass(FNaFSBTestBase):
+    options = {"starting_areas": 0}
+
+    def test_backstage_pass_left_to_the_fill(self) -> None:
+        self.assertNotIn(BACKSTAGE_PASS, self.multiworld.early_items[self.player])
+        self.assertIn(BACKSTAGE_PASS, [i.name for i in self.multiworld.itempool if i.player == self.player])
+        self.assertFalse([l for l in self.multiworld.get_filled_locations()
+                          if l.item.name == BACKSTAGE_PASS and l.address is not None])
+
+    def test_backstage_window(self) -> None:
+        self.assertEqual(self.world.backstage_window(5), (2, 3))
+        self.assertEqual(self.world.backstage_window(10), (2, 3))
+        self.assertEqual(self.world.backstage_window(20), (3, 6))
+
+
+class TestStartWithEveryPass(FNaFSBTestBase):
+    options = {"starting_areas": 5}
+
+    def test_backstage_pass_left_alone(self) -> None:
+        self.assertIn(BACKSTAGE_PASS, self.world.starting_passes)
+        self.assertNotIn(BACKSTAGE_PASS, [i.name for i in self.multiworld.itempool if i.player == self.player])
 
 
 class TestAreaNeedsPassAndBadge(FNaFSBTestBase):

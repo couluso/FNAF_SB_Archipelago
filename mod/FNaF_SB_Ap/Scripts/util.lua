@@ -136,7 +136,6 @@ function Logger:write(tag, msg)
         line = string.format("[%s] [Log] %d lines reached, log stopped for this session", self.clock(), self.max_lines)
     end
     self.file:write(line, "\n")
-    -- written to disk at once by default: when the game crashes, the last lines are the ones that matter
     if self.verbose or self.capped or tag == "Error" or self.lines % self.flush_every == 0 then self.file:flush() end
 end
 

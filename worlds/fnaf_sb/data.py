@@ -390,7 +390,8 @@ BAGS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
     _p("bag_chasing_cars", "roxy_raceway", "Duffel bag \"Chasing Cars\": Roxy Raceway (story-related message)"),
 )
 
-RETIRED_LOCATION_KEYS = frozenset({"daycare.complete_area"})
+RETIRED_LOCATION_KEYS = frozenset({"daycare.complete_area", "loading_dock.escape_chica_chase",
+                                   "rockstar_row.survive_lockdown"})
 
 COMPLETE_EVENTS: Tuple[Tuple[str, str, str], ...] = (
     ("complete_area", "daycare", "Take the wooden door out after finishing the Daycare"),
@@ -466,12 +467,19 @@ MISSION_BY_INTERNAL: Dict[str, MissionDef] = {m.internal: m for m in MISSIONS}
 AREA_STORY_GATE: Dict[str, str] = {
     "prize_counter": "EscapeDaycare", "loading_dock": "EscapeDaycare",
     "rockstar_row": "EscapeDaycare", "utility_tunnels": "EscapeDaycare",
-    "roxy_raceway": "LostAndFound", "kids_cove": "LostAndFound",
-    "beauty_salon": "LostAndFound", "fazbear_theater": "LostAndFound",
+    "roxy_raceway": "PartsAndService", "kids_cove": "PartsAndService",
+    "beauty_salon": "PartsAndService", "fazbear_theater": "PartsAndService",
     "backstage": "RehearsalSpace",
     "parts_service": "Showtime", "warehouse": "Showtime",
     "fazerblast": "PartsAndService", "monty_golf": "PartsAndService",
     "bonnie_bowl": "PartsAndService", "mazercise": "PartsAndService", "fazcade": "PartsAndService",
+}
+
+ABILITY_INSTALL_MISSION: Dict[str, str] = {CLAWS: "MoonlightSerenade", BEAK: "MoonlightSerenade",
+                                           EYES: "UpgradeFreddy"}
+
+LOCATION_BADGE_NEEDS: Dict[str, int] = {
+    "atrium.cupcake_pinata": 4,
 }
 
 FREDDY_INSTALL_EVENTS: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (

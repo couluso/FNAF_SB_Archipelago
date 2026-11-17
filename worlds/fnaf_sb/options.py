@@ -103,6 +103,9 @@ class StartingAreas(Range):
 
     The required Security Badge level and story progress still apply. You always start with
     the Faz-Watch and the Photo Pass.
+
+    If you don't start with the Backstage Pass, it can be anywhere in the multiworld, but always in the
+    late early spheres (not sphere 1), since most of the game is behind it.
     """
     display_name = "Starting Area Passes"
     range_start = 0

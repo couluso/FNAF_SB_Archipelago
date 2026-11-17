@@ -61,6 +61,15 @@ Fazer Blast and Monty Golf each use up a Party Pass, so both Party Passes are ne
 the Party Pass lets you pick one of them, both need the same badge level. If you start with the Party Pass (Starting
 Area Passes), you get one copy, the other one is in the pool.
 
+Freddy's abilities only count once they are installed on Freddy at Parts & Service: Monty's Claws and Chica's Beak after
+Moonlight Serenade, Roxy's Eyes with Upgrade Freddy. Having the item is not enough for logic. Roxy Raceway, Kid's Cove,
+the Salon and the Theater stay behind the Atrium's barriers until Freddy is freed at Parts & Service. The present on the
+Main Entrance front desk is inside the level 4 office, so it needs Security Badge level 4.
+
+The Backstage Pass can be one of your Starting Area Passes like the others. If you don't start with it, it can be
+anywhere in the multiworld, in your world or someone else's, but always in the late early spheres: never sphere 1, and
+never deep in the multiworld, since most of the game is behind it.
+
 You always start with the Faz-Watch and the Photo Pass. The Complimentary Entry Pass, the Mr. Hippo Magnet, the
 Flashlight, the Daycare Pass and, when badges are shuffled, one Security Badge are always placed in sphere 1, in any
 world.

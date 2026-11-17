@@ -66,6 +66,8 @@ C.ap = {
         -- The scene leaves its doors locked for the player: the office's right door (ExitDoor, back to the
         -- utility tunnels) stayed shut after Get Out. Unlocked once the scene is done (again if the game relocks them).
         unlock_doors = true,
+        -- ...and they open with any Security Badge level once the scene is done.
+        open_badge_doors = true,
         doors = {
             "/Game/Maps/Utility/MAP_UtiliDoorsGameplay.MAP_UtiliDoorsGameplay:PersistentLevel.OfficeDoorRight",
             "/Game/Maps/Utility/MAP_UtiliDoorsGameplay.MAP_UtiliDoorsGameplay:PersistentLevel.OfficeDoorLeft",
@@ -92,6 +94,10 @@ C.ap = {
         log_locked_doors = false, locked_doors_range = 800,
     },
     condition_swaps = { FazPassUpgradeMachine_C = { HasUpgradedFazPass = "DaycarePass" } },
+    -- The items of the beaten animatronics. While the pile (classes below) or the item's pickup is loaded and the
+    -- item not taken there, it stays out of the inventory, so the boss and its pile play like the first time.
+    -- Taking it sends its check, it stays while that area is loaded, then it is taken back if not received yet.
+    boss_areas = { MontyClaws = { "ShatteredMontyPile_C" }, ChicaBeak = {}, RoxyEyes = { "ShatteredRoxyPile_C" } },
     voice_lines = {
         { event = "VANESSA_00002", match = { "VANESSA_00002", "supposed to be on lockdown" },
         done_with_mission = "EscapeDaycare" },
@@ -224,7 +230,10 @@ C.ap = {
                                 cards_end = "Checked by default, checked again every time the game starts.",
                                 -- Shown when Death Link is off for the slot (death_link in the YAML).
                                 off_label = "Off for this slot",
-                                off_desc = "Death Link is off for this slot (death_link in your YAML)." },
+                                off_desc = "Death Link is off for this slot (death_link in your YAML).",
+                                -- A line under the rows: collectibles held (Golden Plush not counted) out of the
+                                -- ones the Fire ending needs. Counted again each time the page opens. false = no line.
+                                fire_row = "Fire ending completion : %d/%d", fire_needed = 39, fire_font_size = 30, fire_top = 30 },
                        place = "top_right", h_align = 3, v_align = 1,
                        in_options = false, options_box = "OptionsVerticalBox", options_after = "GeneralOptionButton",
                        padding = { left = 0, top = 190, right = 120, bottom = 0 },
@@ -329,9 +338,23 @@ C.ap = {
                fade_in_ms = 350, slide_px = 40, hold_s = 3, hold_busy_s = 1.5, busy_queue = 2,
                fade_out_ms = 600, max_queue = 8, z_order = 900, tick_ms = 25,
                sound = true, sound_event = "Play_Fazwatch_NewMessage" },
+    -- The mod's credit, bottom right of the title menu (margin_x / margin_y from the corner of the screen).
+    credits = { enabled = true, text = "Mod credits : Coulu",
+                menus = { TitleUI_C = { class = "/Game/Blueprints/UI/TitleUI.TitleUI_C" } },
+                font = "/Game/Fonts/Oxanium_Font.Oxanium_Font", typeface = "Default", font_size = 22, shadow = 0.75,
+                margin_x = 40, margin_y = 40, z_order = 950, tick_ms = 1000 },
     show_messages = true,
     look_cos = 0.93,
-    event_aliases = { ["inventory DaycarePass"] = "actor FazPassUpgradeMachine_C.MagnetDone?" },
+    -- The Monty Golf Faz-Camera also counts when the game hands it out or marks its task done.
+    event_aliases = { ["inventory DaycarePass"] = "actor FazPassUpgradeMachine_C.MagnetDone?",
+                      ["inventory FlashBeacon"] = "collect FlashBeacon",
+                      ["task MontyGolf#0"] = "collect FlashBeacon" },
+    -- A mission the game can no longer finish because its tasks were done out of order, sent anyway. No Re-entry:
+    -- walking into the Daycare with the Archipelago Daycare Pass before the machine hack left it unfinished.
+    mission_fallbacks = {
+        NoReEntry = { after = "actor FazPassUpgradeMachine_C.MagnetDone?", task = 2, area = "daycare",
+                      missions = { "SlideIntoFun", "LetThereBeLight", "EscapeDaycare" } },
+    },
     complete_story_tasks = true,
 }
 
@@ -347,6 +370,9 @@ C.keep_previous_log = true    -- the session before stays in log_previous.txt (a
 C.crash_trace = true          -- trace.txt: each task the mod starts, written at once (its last line = what ran at a crash)
 C.crash_trace_lines = 20000   -- the file starts again past this
 C.hook_settle = true          -- a hook waits one retry after its function appears (streamed in): hooked at once it crashed
+-- A hook still waiting is only looked up hook_class_settle_ms after an actor of its class starts
+C.hook_wait_class = true
+C.hook_class_settle_ms = 10000
 C.log_console = false       -- true: every log line also goes to the UE4SS console
 C.log_verbose = false       -- true: more details in the log (for bug reports)
 C.log_state_details = false
@@ -402,6 +428,9 @@ C.voice_widgets = {}
 
 C.real_world_map = "MAP_TheWorld"
 C.world_switch_pause_s = 5
+-- The mod also waits while the game shows a loading screen, and after_loading_s after it
+C.pause_on_loading = true
+C.after_loading_s = 5
 
 C.inventory_scalars = { "SecurityLevel", "CollectedPartyPassCount", "UsedPartyPassCount",
     "FazwatchMaxPowerLevel", "FreddyMaxPowerLevel" }

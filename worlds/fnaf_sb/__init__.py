@@ -3,12 +3,13 @@ import settings
 from collections import Counter
 from typing import Any, ClassVar, Dict, List
 
-from BaseClasses import Item, ItemClassification, Tutorial
+from BaseClasses import Item, ItemClassification, LocationProgressType, Tutorial
+from Fill import FillError, swap_location_item
 from worlds.AutoWorld import WebWorld, World
 from worlds.LauncherComponents import Component, Type, components, launch_subprocess
 
 from . import data
-from .data import (AREAS, BADGE, BATTERY, CAMERA_ITEMS, COLLECTIBLE_ITEM_NAMES, DAYCARE_PASS, ENDING_BY_GOAL, ENTRY_PASS, EXTRA_ITEM_NAMES, FAZ_WATCH, PROGRESSIVE_FLASHLIGHT,
+from .data import (AREAS, BACKSTAGE_PASS, BADGE, BATTERY, CAMERA_ITEMS, COLLECTIBLE_ITEM_NAMES, DAYCARE_PASS, ENDING_BY_GOAL, ENTRY_PASS, EXTRA_ITEM_NAMES, FAZ_WATCH, PROGRESSIVE_FLASHLIGHT,
                    FILLER_WEIGHTS, GAME_NAME, ITEM_BY_NAME, ITEM_NAME_TO_ID, ITEMS,
                    EXTRA_PROGRESSION_SHARE, LOCATION_NAME_TO_ID, MR_HIPPO_MAGNET, PHOTO_PASS,
                    LOCATION_BY_KEY, PRINCESS_QUEST_ITEMS, TRAP_WEIGHTS, VANILLA_ABILITY_KEYS,
@@ -74,6 +75,7 @@ class FNaFSBWorld(World):
     settings: ClassVar[FNaFSBSettings]
     settings_key = "fnaf_sb_options"
     topology_present = True
+    ut_can_gen_without_yaml = True
 
     item_name_to_id = ITEM_NAME_TO_ID
     location_name_to_id = LOCATION_NAME_TO_ID
@@ -93,14 +95,34 @@ class FNaFSBWorld(World):
         "Clock": {l.name for l in data.LOCATIONS if l.kind == "hour"},
         "Badges": {l.name for l in data.LOCATIONS if l.kind == "badge"},
         "Abilities": {l.name for l in data.LOCATIONS if l.kind == "ability"},
-        "Complete": {l.name for l in data.LOCATIONS if l.kind == "complete" and l.key not in data.RETIRED_LOCATION_KEYS},
         **{a.name: {l.name for l in data.LOCATIONS if l.area == a.key} for a in AREAS},
     }
 
     precollected_counts: Counter
 
+    UT_OPTIONS = ("goal", "present_sanity", "bag_sanity", "randomize_security_badges",
+                  "randomize_freddys_abilities", "randomize_cameras", "lock_princess_quest")
+
+    @staticmethod
+    def interpret_slot_data(slot_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Universal Tracker only: returned as multiworld.re_gen_passthrough[game], read in generate_early."""
+        return slot_data
+
+    def _ut_options(self) -> bool:
+        passthrough = getattr(self.multiworld, "re_gen_passthrough", {}) or {}
+        slot_data = passthrough.get(self.game)
+        if not slot_data:
+            return False
+        for key in self.UT_OPTIONS:
+            option = getattr(self.options, key, None)
+            if option is not None and key in slot_data:
+                setattr(self.options, key, option.from_any(slot_data[key]))
+        self.starting_passes = list(slot_data.get("starting_passes", []))
+        return True
+
     def generate_early(self) -> None:
         self.precollected_counts = Counter()
+        ut = self._ut_options()
         if (self.options.goal.value == Goal.option_unmasked and not self.options.present_sanity
                 and self.options.bag_sanity.value == BagSanity.option_off):
             raise OptionError(f"FNaF Security Breach ({self.player_name}): the Unmasked goal needs "
@@ -132,12 +154,72 @@ class FNaFSBWorld(World):
         if not any(self.filler_weights.values()):
             self.filler_weights = {BATTERY: 1}
 
-        count = min(int(self.options.starting_areas), len(STARTING_PASSES))
-        for name in self.random.sample(STARTING_PASSES, count):
+        if not ut:
+            count = min(int(self.options.starting_areas), len(STARTING_PASSES))
+            self.starting_passes = self.random.sample(STARTING_PASSES, count)
+        for name in self.starting_passes:
             precollect(name)
 
     def create_regions(self) -> None:
         create_regions(self)
+
+    BACKSTAGE_SPHERES = (0.15, 0.3)
+    BACKSTAGE_FIRST_SPHERE = 2
+    BACKSTAGE_LATER_TRIES = 10
+
+    def backstage_window(self, count: int) -> tuple:
+        lo = max(self.BACKSTAGE_FIRST_SPHERE, round(count * self.BACKSTAGE_SPHERES[0]))
+        hi = max(lo + 1, round(count * self.BACKSTAGE_SPHERES[1]))
+        return lo, hi
+
+    def backstage_spheres(self) -> Dict[Any, int]:
+        """Location -> its sphere (1 = reachable from the start), events left out like in the spoiler."""
+        spheres: Dict[Any, int] = {}
+        for number, sphere in enumerate(self.multiworld.get_sendable_spheres(), 1):
+            if not sphere:
+                break
+            for loc in sphere:
+                spheres[loc] = number
+        return spheres
+
+    def post_fill(self) -> None:
+        if BACKSTAGE_PASS in self.starting_passes:
+            return
+        spot = next((loc for loc in self.multiworld.get_filled_locations()
+                     if loc.item.player == self.player and loc.item.name == BACKSTAGE_PASS), None)
+        if spot is None:
+            return
+        spheres = self.backstage_spheres()
+        if not spheres:
+            return
+        lo, hi = self.backstage_window(max(spheres.values()))
+        now = spheres.get(spot)
+        if now is not None and lo <= now <= hi:
+            return
+        state = self.multiworld.state
+        backstage = spot.item
+        spots = sorted((loc for loc, number in spheres.items()
+                        if lo <= number <= hi and loc is not spot and not loc.locked
+                        and not loc.item.advancement and type(loc.address) is int
+                        and loc.progress_type != LocationProgressType.EXCLUDED
+                        and loc.can_fill(state, backstage, False) and spot.can_fill(state, loc.item, False)),
+                       key=lambda loc: (loc.player, loc.name))
+        self.random.shuffle(spots)
+        later = now is not None and now < lo
+        for target in spots[:self.BACKSTAGE_LATER_TRIES] if later else spots[:1]:
+            swap_location_item(spot, target, False)
+            if not later or (lo <= self.backstage_spheres().get(target, 0) <= hi and self.backstage_still_fine()):
+                return
+            swap_location_item(spot, target, False)
+        if not spots:
+            logging.warning(f"FNaF Security Breach ({self.player_name}): no spot for the Backstage Pass in "
+                            f"spheres {lo} to {hi}, left in sphere {now}")
+
+    def backstage_still_fine(self) -> bool:
+        try:
+            return bool(self.multiworld.fulfills_accessibility())
+        except FillError:
+            return False
 
     def create_item(self, name: str) -> FNaFSBItem:
         item = ITEM_BY_NAME[name]
@@ -244,6 +326,7 @@ class FNaFSBWorld(World):
             "randomize_freddys_abilities": bool(self.options.randomize_freddys_abilities),
             "randomize_cameras": bool(self.options.randomize_cameras),
             "lock_princess_quest": bool(self.options.lock_princess_quest),
+            "starting_passes": list(self.starting_passes),
             "death_link": self.options.death_link.value != 0,
             "death_link_behavior": DEATH_LINK_KILLER.get(self.options.death_link.value, 13),
         }

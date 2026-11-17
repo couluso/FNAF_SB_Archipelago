@@ -7,8 +7,8 @@ Freddy's abilities and gadgets you need are shuffled across the multiworld. Get 
 playing Ocarina of Time, send them a hookshot from a present in the Daycare, and try not to get caught by Chica on the
 way.
 
-This is the second beta. It's playable from start to finish, but expect bugs, and please report them. What changed
-since the first one is in the patch notes on the release page.
+This is the third beta. It's playable from start to finish, but expect bugs, and please report them. What changed
+since the last one is in the patch notes on the release page.
 
 ## How to play
 
@@ -29,8 +29,9 @@ You need two files from the release page:
   (unless Randomize Security Badges is off)
 - Passes, gadgets, cameras and Freddy's abilities come from the multiworld. The game's doors still check them like
   usual, so the Bonnie Bowl door stays shut until someone sends you the Bowling Ticket.
-- Beating Monty, Chica or Roxy is a check. Their Claws, Voice Box and Eyes are items like any other, and you still
-  bring them to Parts & Service to upgrade Freddy.
+- Beating Monty, Chica or Roxy is a check, and so is taking their Claws, Voice Box or Eyes from them. Those parts are
+  items like any other, and you still bring them to Parts & Service to upgrade Freddy. You can always take them from
+  the beaten animatronic, even if you already received them.
 - The elevators out of the lobby stay off until you've escaped the Daycare ("Requires Completing Daycare"), so the
   story can't be skipped by accident.
 - The Princess Quest machines need their Princess Quest item, and the act before them beaten.
@@ -39,7 +40,8 @@ You need two files from the release page:
 - The lobby security office: after doing the intro chase and going to the main entrance, the door stays open so you can go back to pick up items you might have missed
 - No tooltips by default: the game's instruction cards never show. An item received inside Freddy or in a cutscene
   could open one that can't be closed. They can be turned back on from the pause menu.
-- An "Archipelago Options" page in the pause menu, for the Death Link behavior and the tooltips.
+- An "Archipelago Options" page in the pause menu, for the Death Link behavior and the tooltips. It also shows how many
+  collectibles you have out of the 39 the Fire ending needs.
 - Received items show up in the bottom left corner. Filler items and traps (Caffeine, Stun Trap, Foxy...) are new
   effects, they don't exist in the base game.
 - Only the ending set as your goal completes your game. The other endings still play, they just don't count.
