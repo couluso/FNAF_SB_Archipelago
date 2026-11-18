@@ -64,9 +64,9 @@ the person generating the multiworld.
 ## Joining a multiworld
 
 1. Open "FNaF SB Client" from the Archipelago Launcher.
-2. Start the game.
-3. In the client, connect with `/connect <address>:<port>` and enter your
+2. In the client, connect with `/connect <address>:<port>` and enter your
    slot name.
+3. Start the game.
 4. Start a new game.
 
 **IT IS HIGLY RECOMMENDED TO KEEP BACKUPS OF YOU SAVES IN CASE YOU GET STUCK**
